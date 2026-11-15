@@ -1,0 +1,4 @@
+# Laufzeit
+requests>=2.31
+# Entwicklung / Tests
+pytest>=8
