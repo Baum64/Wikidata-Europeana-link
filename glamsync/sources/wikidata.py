@@ -10,6 +10,7 @@ Leitlinien (Timeouts vermeiden):
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict
 from collections.abc import Iterable
 
@@ -27,7 +28,9 @@ ENTITY = "http://www.wikidata.org/entity/"
 #   Q234110 = Europeana (so auch in 228 bestehenden P7704-Referenzen verwendet)
 #   Q621630 = Deutsche Digitale Bibliothek
 #   Achtung: Q6955 ist „19. Jahrhundert“, NICHT Europeana.
-SOURCE_ITEMS = {"europeana": "Q234110", "ddb": "Q621630"}
+#   Q28657655 = ISIL Datei und Sigelverzeichnis (so in 3.888 bestehenden P791-Referenzen)
+#   Für „Museen in Österreich“ (P7917) gibt es kein Item → Referenz über S854 (URL des Eintrags).
+SOURCE_ITEMS = {"europeana": "Q234110", "ddb": "Q621630", "isil": "Q28657655"}
 
 
 def _strip(uri: str) -> str:
@@ -68,6 +71,36 @@ class Wikidata:
         path = "wdt:P31/wdt:P279*" if subclasses else "wdt:P31"
         rows = self.query(f"SELECT DISTINCT ?item WHERE {{ ?item {path} wd:{type_qid} ; wdt:P17 wd:{country} . }}")
         return sorted({_strip(r["item"]) for r in rows}, key=lambda q: int(q[1:]))
+
+    def big_cities(self, country: str, city_class: str = "Q1549591", min_population: int = 100_000,
+                   subclasses: bool = True) -> list[str]:
+        """Großstädte: P31 = Großstadt (Q1549591) ODER Stadt (Q515) mit ≥ min_population Einwohnern (P1082).
+
+        Die Klasse allein reicht nicht – z. B. fehlt Berlin (P31 Stadtstaat/Metropole).
+        """
+        path = "wdt:P31/wdt:P279*" if subclasses else "wdt:P31"
+        rows = self.query(f"""
+SELECT DISTINCT ?item WHERE {{
+  ?item wdt:P17 wd:{country} .
+  {{ ?item {path} wd:{city_class} }}
+  UNION {{ ?item {path} wd:Q515 ; wdt:P1082 ?pop . FILTER(?pop >= {int(min_population)}) }}
+  FILTER NOT EXISTS {{ ?item wdt:P576 ?aufgeloest }}   # keine aufgelösten Städte (z. B. Altona)
+}}""")
+        return sorted({_strip(r["item"]) for r in rows}, key=lambda q: int(q[1:]))
+
+    # Städte in den Niederlanden und Dänemark tragen P17 = Landesteil, nicht das Königreich
+    EUROPE_EXTRA = {"Q55": "Niederlande", "Q35": "Dänemark"}
+
+    def european_countries(self) -> dict[str, str]:
+        """Souveräne Staaten (Q3624078) mit Kontinent Europa (P30 Q46), ohne aufgelöste → {QID: Name}."""
+        rows = self.query("""
+SELECT ?c ?l WHERE {
+  ?c wdt:P31 wd:Q3624078 ; wdt:P30 wd:Q46 . FILTER NOT EXISTS { ?c wdt:P576 ?e }
+  OPTIONAL { ?c rdfs:label ?l FILTER(LANG(?l) = "de") }
+}""")
+        out = {_strip(r["c"]): r.get("l", _strip(r["c"])) for r in rows}
+        out.update(self.EUROPE_EXTRA)
+        return dict(sorted(out.items(), key=lambda kv: kv[1]))
 
     # --- Detaildaten ----------------------------------------------------------
     def fetch_items(self, qids: Iterable[str], batch: int = 150) -> dict[str, WikidataItem]:
@@ -134,6 +167,49 @@ SELECT ?item ?value WHERE {{
             for r in rows:
                 out[r["value"]].add(_strip(r["item"]))
         return {k: sorted(v) for k, v in out.items()}
+
+    def fetch_extras(self, qids: Iterable[str], batch: int = 200):
+        """Websites (P856), Aliasse (de/en) und Koordinaten (P625) für den Namens-/Website-Abgleich."""
+        from ..registry import Extras  # spätes Import, um Zirkelbezug zu vermeiden
+
+        qids = sorted(set(qids))
+        out = {q: Extras() for q in qids}
+        for chunk in _chunks(qids, batch):
+            values = " ".join(f"wd:{q}" for q in chunk)
+            rows = self.query(f"""
+SELECT ?item ?w ?a ?c WHERE {{
+  VALUES ?item {{ {values} }}
+  {{ ?item wdt:P856 ?w }} UNION {{ ?item skos:altLabel ?a FILTER(LANG(?a) IN ("de", "en")) }}
+  UNION {{ ?item wdt:P625 ?c }}
+}}""")
+            for r in rows:
+                ex = out[_strip(r["item"])]
+                if "w" in r:
+                    ex.websites.append(r["w"])
+                elif "a" in r:
+                    ex.aliases.append(r["a"])
+                elif "c" in r:
+                    m = re.match(r"Point\(([-\d.eE]+) ([-\d.eE]+)\)", r["c"])
+                    if m:
+                        ex.coords.append((float(m.group(2)), float(m.group(1))))
+        return out
+
+    def all_values(self, prop: str, prefix: str | None = None) -> list[tuple[str, str]]:
+        """Alle (QID, Wert) einer Property (ohne deprecated), optional nur Werte mit Präfix."""
+        return [(s["qid"], s["value"]) for s in self.all_statements(prop, prefix)]
+
+    def all_statements(self, prop: str, prefix: str | None = None) -> list[dict]:
+        """Alle Aussagen einer Property (ohne deprecated) mit Angabe, ob Quellen/Qualifier vorhanden sind."""
+        filt = f'FILTER(STRSTARTS(UCASE(?v), "{prefix.upper()}"))' if prefix else ""
+        rows = self.query(f"""
+SELECT ?item ?v ?hasRef ?hasQual WHERE {{
+  ?item p:{prop} ?st . ?st ps:{prop} ?v ; wikibase:rank ?rank .
+  FILTER(?rank != wikibase:DeprecatedRank) {filt}
+  BIND(EXISTS {{ ?st prov:wasDerivedFrom ?ref }} AS ?hasRef)
+  BIND(EXISTS {{ ?st ?pq ?qv . FILTER(STRSTARTS(STR(?pq), "http://www.wikidata.org/prop/qualifier/P")) }} AS ?hasQual)
+}}""")
+        return [{"qid": _strip(r["item"]), "value": r["v"], "has_refs": r["hasRef"] == "true",
+                 "has_qualifiers": r["hasQual"] == "true"} for r in rows]
 
     def p7704_non_agent(self) -> list[dict[str, str]]:
         """Alle P7704-Aussagen außer agent/… (Organisationen, Orte, Begriffe, Fehlformen)."""

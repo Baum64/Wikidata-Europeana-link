@@ -97,7 +97,8 @@ def test_normalize_p7704(raw, expected):
     "raw,fragment",
     [
         ("organisation/1234", None),
-        ("organization/1234", "amerikanische"),
+        ("organization/1234", None),  # beide Schreibweisen lösen auf
+        ("Organization/1234", "unbekanntes Format"),
         ("http://data.europeana.eu/organization/1", "URL"),
         ("item/2048128/618580", "P727"),
         ("90402/SK_A_3262", "P727"),
@@ -114,8 +115,9 @@ def test_p7704_problem(raw, fragment):
 
 
 def test_p7704_check():
+    # 'organization/' gilt als korrekt → keine Korrektur-QS
     c = check("P7704", "organization/4648")
-    assert c.normalized == "organisation/4648" and not c.format_ok
+    assert c.normalized == "organisation/4648" and c.format_ok
     assert check("P7704", "organisation/4648").format_ok
 
 
@@ -132,6 +134,9 @@ def test_p7704_check():
         (" DE-2294 ", "DE-2294"),
         ("Q12345", None),
         ("DE-", None),
+        ("DE-MUS", None),  # Museums-ISIL ohne Nummer
+        ("DE-MUS-", None),
+        ("DE-MUS-abc", None),
         (None, None),
     ],
 )
@@ -152,6 +157,9 @@ def test_isil_check_lowercase_prefix_is_format_error():
         ("https://d-nb.info/gnd/1125722673", "1125722673"),
         ("http://d-nb.info/gnd/5036103-x", "5036103-X"),
         ("36441-1", "36441-1"),
+        ("1409382877", "1409382877"),  # neuer Nummernkreis 14…, darf nie als ungültig gelten
+        ("1415434921", "1415434921"),
+        ("1912345678", "1912345678"),
         ("http://d-nb.info/gnd/4034013-2/about", "4034013-2"),
         ("abc", None),
     ],
@@ -170,3 +178,12 @@ def test_normalize_gnd(raw, expected):
 )
 def test_normalize_viaf(raw, expected):
     assert normalize_viaf(raw) == expected
+
+
+# --- P7917 Museums in Austria Code ------------------------------------------
+@pytest.mark.parametrize("raw,expected", [
+    ("M10072", "M10072"), (" m10072 ", "M10072"), ("M1007", None), ("10072", None), ("M100721", None),
+])
+def test_normalize_mure(raw, expected):
+    from glamsync.normalize import normalize_mure
+    assert normalize_mure(raw) == expected

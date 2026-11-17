@@ -21,7 +21,7 @@ from .match import (
     wikidata_format_findings,
 )
 from .models import FEHLT, FORMATFEHLER, IDENTISCH, KONFLIKT, MEHRDEUTIG, Finding, SourceRecord, Statement, WikidataItem
-from .normalize import PROPERTIES, normalize
+from .normalize import PROPERTIES, compare_key, normalize
 from .sources import ddb, europeana
 from .sources.wikidata import TYPES, Wikidata
 
@@ -42,8 +42,16 @@ def _save(name: str, obj) -> Path:
 
 
 def _load(name: str):
+    """Lädt data/<name>.json; Wikidata-Grundmengen nur, solange jünger als GLAMSYNC_WIKIDATA_CACHE_HOURS."""
+    import time
+
     p = _data_path(name)
-    return json.loads(p.read_text(encoding="utf-8")) if p.is_file() else None
+    if not p.is_file():
+        return None
+    if name.startswith("wikidata_") and time.time() - p.stat().st_mtime > config.WIKIDATA_CACHE_HOURS * 3600:
+        log.info("%s ist älter als %g h – wird neu von Wikidata geladen", p.name, config.WIKIDATA_CACHE_HOURS)
+        return None
+    return json.loads(p.read_text(encoding="utf-8"))
 
 
 def _items_from_json(d: dict) -> dict[str, WikidataItem]:
@@ -91,7 +99,7 @@ def fetch_wikidata(client: CachedClient, country: str, types: list[str], subclas
 
 # --- compare ---------------------------------------------------------------------
 def compare(client: CachedClient, country: str, types: list[str], limit: int | None = None,
-            subclasses: bool = False, sources: tuple[str, ...] = ("europeana", "ddb")) -> dict:
+            subclasses: bool = True, sources: tuple[str, ...] = ("europeana", "ddb")) -> dict:
     wd = Wikidata(client)
     date = export.today()
     notes: list[str] = []
@@ -184,7 +192,7 @@ def compare(client: CachedClient, country: str, types: list[str], limit: int | N
     export.write_candidates(cands, out / f"kandidaten_namen_{date}.csv")
 
     results = {
-        "date": date, "country": country, "types": types, "limit": limit,
+        "date": date, "country": country, "types": types, "limit": limit, "subclasses": subclasses,
         "matches": match_rows, "wikidata_findings": [f.to_dict() for f in wd_findings],
     }
     results_path = out / f"results_{date}.json"
@@ -223,7 +231,7 @@ def build_summary(results: dict, base: dict[str, dict[str, WikidataItem]], notes
 
     qs = []
     for prop in PROPERTIES:
-        for action in ("new", "fix"):
+        for action in ("new", "fix", "delete"):
             groups = export.qs_commands(all_findings, prop, action, results["date"])
             if groups:
                 qs.append({"prop": prop, "action": action, "commands": len(groups),
@@ -231,7 +239,7 @@ def build_summary(results: dict, base: dict[str, dict[str, WikidataItem]], notes
 
     return {
         "date": results["date"], "country": results["country"], "types": results["types"],
-        "limit": results["limit"], "base": base_rows, "matching": matching,
+        "limit": results["limit"], "subclasses": results.get("subclasses"), "base": base_rows, "matching": matching,
         "classification": export.count_classification(results["matches"], [Finding(**f) for f in results["wikidata_findings"]]),
         "statuses": STATUSES, "qs": qs, "notes": notes,
     }
@@ -250,9 +258,186 @@ def export_qs(prop: str, action: str, date: str | None = None) -> list[Path]:
     findings = [Finding(**f) for m in results["matches"] for f in m["findings"]]
     findings += [Finding(**f) for f in results["wikidata_findings"]]
     props = PROPERTIES if prop == "all" else [prop]
-    actions = ["new", "fix"] if action == "all" else [action]
+    actions = ["new", "fix", "delete"] if action == "all" else [action]
     written = []
     for p in props:
         for a in actions:
             written += export.write_qs(findings, p, a, results["date"])
     return written
+
+
+# --- Register ohne gemeinsamen Schlüssel (ISIL-Verzeichnis, Museen in Österreich) -----
+REGISTRY_SOURCES = {
+    # Quelle: (Property, Standard-Typen)
+    "isil": ("P791", ["museum", "library", "archive"]),
+    "mure": ("P7917", ["museum"]),
+}
+# Länderpräfix der ISIL je Land
+ISIL_PREFIX = {"Q183": "DE", "Q40": "AT", "Q39": "CH"}
+
+
+def registry_compare(client: CachedClient, source: str, country: str, types: list[str] | None = None,
+                     subclasses: bool = True) -> dict:
+    from . import registry as reg
+    from .sources import registry as reg_src
+
+    wd = Wikidata(client)
+    date = export.today()
+    prop, default_types = REGISTRY_SOURCES[source]
+    types = types or default_types
+
+    # 1. Register laden
+    if source == "isil":
+        prefix = ISIL_PREFIX.get(country)
+        if not prefix:
+            raise SystemExit(f"Kein ISIL-Präfix für {country} hinterlegt ({ISIL_PREFIX}).")
+        records = reg_src.fetch_isil(client, prefix)
+        value_prefix = prefix + "-"
+    else:
+        if country != "Q40":
+            raise SystemExit("Museen in Österreich gibt es nur für --country Q40.")
+        records = reg_src.fetch_mure(client)
+        value_prefix = None
+
+    # 2. Wikidata: vorhandene Werte (ganz Wikidata) und Kandidaten-Pool (Land × Typen)
+    statements = wd.all_statements(prop, value_prefix)
+    value_rows = [(st["qid"], st["value"]) for st in statements]
+    value_index: dict[str, set[str]] = {}
+    item_values: dict[str, list[str]] = {}
+    for q, v in value_rows:
+        value_index.setdefault(compare_key(prop, normalize_value(prop, v)), set()).add(q)
+        item_values.setdefault(q, []).append(v)
+
+    items: dict[str, WikidataItem] = {}
+    for t in types:
+        name = f"wikidata_{country}_{t}{'_sub' if subclasses else ''}"
+        d = _load(name) or fetch_wikidata(client, country, [t], subclasses)[t]
+        items.update(_items_from_json(d))
+    extras = wd.fetch_extras(items)
+    pool = reg.Pool(dict(items), extras)  # Kopie: items wird unten für den Bericht ergänzt
+
+    # 3. Abgleich
+    matches = reg.classify_registry(records, pool, value_index, item_values)
+    registry_keys = {compare_key(prop, r.value) for r in records}
+    cleanup = reg.registry_cleanup(statements, registry_keys, prop, value_prefix)
+    # Labels für Items außerhalb des Pools nachladen (für Bericht)
+    outside = {q for m in matches for q in m.qids} | {c.qid for c in cleanup}
+    items.update(wd.fetch_items(outside - set(items)))
+
+    # 4. Ausgabe
+    out = config.OUT_DIR
+    out.mkdir(parents=True, exist_ok=True)
+    stem = f"register_{source}_{country}_{date}"
+    export.write_registry_report(matches, items, out / f"{stem}.csv")
+    export.write_registry_cleanup(cleanup, items, prop, out / f"{stem}_bereinigung.csv")
+    qs_files = export.write_registry_qs(matches, prop, source, country, date)
+    qs_files += export.write_registry_delete_qs(cleanup, prop, country, date)
+    counts = Counter(m.status for m in matches)
+    summary = {
+        "date": date, "source": source, "prop": prop, "country": country, "types": types, "subclasses": subclasses,
+        "records": len(records), "pool": len(pool.items), "counts": counts,
+        "cleanup": Counter((c.kind, c.action or "bericht") for c in cleanup),
+        "qs_files": [p.name for p in qs_files], "statuses": reg.STATUSES,
+        "qs_commands": counts.get(reg.STARK, 0),
+    }
+    export.write_registry_summary(summary, out / f"{stem}.md")
+    return summary
+
+
+def normalize_value(prop: str, v: str) -> str:
+    return (normalize(prop, v) if prop in PROPERTIES else v.strip().upper()) or v
+
+
+# --- Städte: Europeana-Orte ↔ Wikidata (P7704 place/base/<n>) ----------------------
+BIG_CITY = "Q1549591"  # Großstadt
+
+
+def cities_compare(client: CachedClient, country: str = "europa", city_class: str = BIG_CITY,
+                   subclasses: bool = True, min_population: int = 100_000) -> dict:
+    from .match import classify_city
+    from .sources import places
+
+    wd = Wikidata(client)
+    date = export.today()
+
+    # 1. Städte aus Wikidata – je Land einzeln abfragen (vermeidet Timeouts)
+    if country.lower() in ("europa", "europe"):
+        countries = wd.european_countries()
+        tag_country = "europa"
+    else:
+        countries = {c.strip(): c.strip() for c in country.split(",")}
+        tag_country = country.replace(",", "-")
+    city_country: dict[str, str] = {}
+    failed: list[str] = []
+    for c, name in countries.items():
+        try:
+            found = wd.big_cities(c, city_class, min_population, subclasses)
+        except Exception as exc:  # z. B. SPARQL-Timeout bei einem Land
+            log.warning("Städte für %s (%s) nicht abrufbar: %s", name, c, exc)
+            failed.append(f"{name} ({c})")
+            continue
+        for q in found:
+            city_country.setdefault(q, name)
+        log.info("Wikidata: %s – %d Städte", name, len(found))
+    qids = sorted(city_country, key=lambda q: int(q[1:]))
+    items = wd.fetch_items(qids)
+    log.info("Wikidata: %d Städte insgesamt", len(qids))
+
+    # 2. Europeana-Orte je Stadt über sameAs auflösen
+    resolved = {q: places.resolve_qid(client, q) for q in qids}
+    raw = {n: places.fetch_place(client, n) for ns in resolved.values() for n in ns}
+    recs = {n: places.place_record(n, d) for n, d in raw.items()}
+    counts = {n: places.record_count(d) for n, d in raw.items()}
+
+    # 3. Rückwärtssuche: Hängt ein Ort schon an einem anderen Item?
+    vals = {v for n in recs for v in (f"place/base/{n}", f"place/{n}")}
+    lookups = build_lookups({"P7704": wd.lookup("P7704", vals) if vals else {}})
+
+    # 4. Klassifikation
+    findings = []
+    for q in qids:
+        f = classify_city(q, items[q], [recs[n] for n in resolved[q]], lookups, counts)
+        findings.append(f)
+    resolve_collisions(findings)
+    # Formatprüfung bereits vorhandener P7704-Werte der Städte (Korrektur/Löschung)
+    already = {(f.qid, f.prop, f.old_value) for f in findings if f.old_value}
+    wd_findings = [f for f in wikidata_format_findings(items, set(), already) if f.prop == "P7704"]
+
+    # 5. Ausgabe
+    tag = f"staedte_{tag_country}"
+    out = config.OUT_DIR
+    files = []
+    for action in ("new", "fix", "delete"):
+        files += export.write_qs(findings + wd_findings, "P7704", action, date, tag=tag)
+
+    rows = []
+    for f in findings + wd_findings:
+        nums = (f.source_id or "").split(",") if f.source_id else []
+        rec = recs.get(nums[0]) if len(nums) == 1 else None
+        rows.append({
+            "land": city_country.get(f.qid, ""), "qid": f.qid, "wikidata_label": items[f.qid].label, "europeana_id": f.source_id or "",
+            "europeana_label": rec.label if rec else "", "europeana_url": rec.url if rec else "",
+            "status": f.status, "P7704_vorschlag": f.source_value or "",
+            "P7704_wikidata": f.old_value or "|".join(f.wikidata_values), "aktion": f.action or "",
+            "hinweis": f.note,
+        })
+    rows.sort(key=lambda r: (r["land"], r["status"], r["wikidata_label"]))
+    export.write_city_report(rows, out / f"staedte_{tag_country}_{date}.csv")
+
+    per_country: dict[str, Counter] = {}
+    for f in findings:
+        per_country.setdefault(city_country[f.qid], Counter())[f.status] += 1
+
+    summary = {
+        "date": date, "country": tag_country, "countries": len(countries), "failed": failed,
+        "per_country": {k: dict(v) for k, v in sorted(per_country.items())}, "class": city_class, "subclasses": subclasses, "cities": len(qids),
+        "min_population": min_population,
+        "status": dict(Counter(f.status for f in findings).most_common()),
+        "files": [p.name for p in files],
+        "duplicates": [f"{city_country[q]}: {q} {items[q].label}: " + ", ".join(f"place/{n} ({counts[n]} Objekte)" for n in ns)
+                       for q, ns in resolved.items() if len(ns) > 1],
+    }
+    if wd_findings:
+        summary["status"]["formatpruefung_wikidata"] = len(wd_findings)
+    export.write_city_summary(summary, out / f"staedte_{tag_country}_{date}.md")
+    return summary

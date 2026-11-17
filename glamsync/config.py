@@ -43,6 +43,9 @@ REPOSITORY = "https://github.com/Baum64/Wikidata-Europeana-link"
 # Kontaktangabe für den User-Agent (Wikimedia-Policy): URL oder E-Mail; Standard: Repository.
 CONTACT: str = os.environ.get("GLAMSYNC_CONTACT", "").strip() or REPOSITORY
 
+# Lebensdauer des Wikidata-Caches (HTTP-Cache und data/wikidata_*.json) in Stunden
+WIKIDATA_CACHE_HOURS: float = float(os.environ.get("GLAMSYNC_WIKIDATA_CACHE_HOURS", "12"))
+
 VERSION = "0.1.0"
 
 

@@ -81,7 +81,10 @@ def normalize_isil(value: str | None) -> str | None:
     if not m:
         return None
     prefix, rest = m.group(1).upper(), m.group(2)
-    if re.match(r"^mus-", rest, re.I):
+    if re.match(r"^mus(?:-|$)", rest, re.I):
+        # Museums-ISIL: DE-MUS-<Ziffern>; 'DE-MUS' allein oder ohne Nummer ist ungültig
+        if not re.fullmatch(r"(?i)mus-\d+", rest):
+            return None
         rest = "MUS-" + rest[4:]
     return f"{prefix}-{rest}"
 
@@ -92,9 +95,11 @@ def isil_key(value: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# P227 GND (Format-Regex wie in Wikidata-P227-Constraint)
+# P227 GND. Wikidata-Constraint (Stand 15.11.2026): 1[01234]?\d{7}[0-9X]|… – der Nummernkreis
+# wächst laufend (14…), daher hier bewusst 1\d?\d{7}[0-9X], damit gültige neue GND nie als
+# „ungültig“ zur Löschung vorgeschlagen werden.
 # ---------------------------------------------------------------------------
-_GND_RE = re.compile(r"^(?:1[0123]?\d{7}[0-9X]|[47]\d{6}-\d|[1-9]\d{0,7}-[0-9X]|3\d{7}[0-9X])$")
+_GND_RE = re.compile(r"^(?:1\d?\d{7}[0-9X]|[47]\d{6}-\d|[1-9]\d{0,7}-[0-9X]|3\d{7}[0-9X])$")
 
 
 def normalize_gnd(value: str | None) -> str | None:
@@ -124,7 +129,9 @@ def normalize_viaf(value: str | None) -> str | None:
 # ---------------------------------------------------------------------------
 # P7704 Europeana entity
 # ---------------------------------------------------------------------------
-_P7704_OK = re.compile(r"^(?:organisation/\d+|(?:agent|place|concept|timespan)/base/\d+)$")
+# 'organization/<n>' (amerikanisch) löst bei Europeana ebenso auf wie 'organisation/<n>' und gilt
+# daher als korrekt – dafür wird keine Korrektur vorgeschlagen.
+_P7704_OK = re.compile(r"^(?:organi[sz]ation/\d+|(?:agent|place|concept|timespan)/base/\d+)$")
 # Ab dieser Länge gilt eine Organisations-ID als alte CRM-ID (z. B. 1482250000004502115)
 LEGACY_ORG_ID_MIN_LEN = 13
 
@@ -162,11 +169,9 @@ def p7704_problem(value: str) -> str | None:
     v = value.strip()
     if _P7704_OK.match(v):
         n = v.rsplit("/", 1)[-1]
-        if v.startswith("organisation/") and len(n) >= LEGACY_ORG_ID_MIN_LEN:
+        if v.startswith("organi") and len(n) >= LEGACY_ORG_ID_MIN_LEN:
             return "veraltete Organisations-ID (CRM)"
         return None
-    if re.match(r"(?i)^organization/\d+$", v):
-        return "amerikanische Schreibweise organization/"
     if v.lower().startswith("http"):
         return "volle URL statt ID"
     if v.startswith("collections/"):
@@ -176,6 +181,17 @@ def p7704_problem(value: str) -> str | None:
     if re.fullmatch(r"\d+", v):
         return "Wert ohne Präfix"
     return "unbekanntes Format"
+
+
+# ---------------------------------------------------------------------------
+# P7917 Museums in Austria Code: 'M' + 5 Ziffern
+# ---------------------------------------------------------------------------
+def normalize_mure(value: str | None) -> str | None:
+    """' m10072 ' → 'M10072'; alles andere → None."""
+    if not value:
+        return None
+    v = value.strip().upper()
+    return v if re.fullmatch(r"M\d{5}", v) else None
 
 
 # ---------------------------------------------------------------------------
@@ -189,11 +205,12 @@ NORMALIZERS = {
     "P213": normalize_isni,
 }
 
-PROPERTIES = list(NORMALIZERS)
+PROPERTIES = list(NORMALIZERS)  # Properties des Europeana/DDB-Abgleichs
+ALL_NORMALIZERS = {**NORMALIZERS, "P7917": normalize_mure}  # inkl. Registerabgleich
 
 
 def normalize(prop: str, value: str | None) -> str | None:
-    return NORMALIZERS[prop](value)
+    return ALL_NORMALIZERS[prop](value)
 
 
 def compare_key(prop: str, value: str) -> str:
@@ -214,7 +231,8 @@ def check(prop: str, raw: str) -> Check:
     norm = normalize(prop, raw)
     if prop == "P7704":
         problem = p7704_problem(raw)
-        return Check(raw, norm, norm == raw and problem is None, problem)
+        # gültig, wenn kein Problem vorliegt (auch 'organization/<n>', normalisiert nur für den Vergleich)
+        return Check(raw, norm, norm is not None and problem is None, problem)
     if norm is None:
         return Check(raw, None, False, "ungültiges Format")
     if norm == raw:

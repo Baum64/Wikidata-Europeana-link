@@ -27,7 +27,20 @@ MIN_INTERVAL = {
     "query.wikidata.org": 1.0,
     "api.europeana.eu": 0.1,
     "api.deutsche-digitale-bibliothek.de": 0.2,
+    "isil.staatsbibliothek-berlin.de": 0.5,
+    "museen-in-oesterreich.at": 0.5,
 }
+
+
+# Maximales Alter von Cache-Einträgen in Sekunden (None = unbegrenzt).
+# Wikidata ändert sich durch eigene QuickStatements laufend → kurze Lebensdauer,
+# sonst würden bereits eingespielte Vorschläge erneut erzeugt.
+MAX_AGE = {"query.wikidata.org": config.WIKIDATA_CACHE_HOURS * 3600}
+
+
+def cache_fresh(path, host: str) -> bool:
+    max_age = MAX_AGE.get(host)
+    return path.is_file() and (max_age is None or time.time() - path.stat().st_mtime < max_age)
 
 
 def _redact(params: dict[str, Any] | None) -> dict[str, Any]:
@@ -75,10 +88,10 @@ class CachedClient:
         Bei allow_404=True wird für 404 None zurückgegeben (und ebenfalls gecacht).
         """
         path = self._cache_path(method, url, params, data)
-        if self.use_cache and path.is_file():
+        host = urlsplit(url).netloc
+        if self.use_cache and cache_fresh(path, host):
             return json.loads(path.read_text(encoding="utf-8"))["body"]
 
-        host = urlsplit(url).netloc
         hdrs = {"Accept": "application/json", **(headers or {})}
         for attempt in range(self.max_retries + 1):
             self._throttle(host)
@@ -120,6 +133,36 @@ class CachedClient:
                 json.dumps({"url": url, "params": _redact(params), "body": body}, ensure_ascii=False),
                 encoding="utf-8",
             )
+        return body
+
+    def resolve(self, url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Folgt keiner Weiterleitung, sondern liefert {status, location, body} (gecacht).
+
+        Für Auflösungsdienste, die mit 300/301 antworten (z. B. Europeana /entity/resolve).
+        """
+        path = self._cache_path("RESOLVE", url, params, None)
+        host = urlsplit(url).netloc
+        if self.use_cache and cache_fresh(path, host):
+            return json.loads(path.read_text(encoding="utf-8"))["body"]
+        for attempt in range(self.max_retries + 1):
+            self._throttle(host)
+            resp = self.session.get(url, params=params, allow_redirects=False, timeout=60,
+                                    headers={"Accept": "application/json"})
+            if resp.status_code in (429, 502, 503, 504) and attempt < self.max_retries:
+                time.sleep(2 ** (attempt + 1))
+                continue
+            break
+        if resp.status_code >= 500 or resp.status_code in (401, 403, 429):
+            raise requests.HTTPError(f"HTTP {resp.status_code} für {url} params={_redact(params)}", response=resp)
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = None
+        body = {"status": resp.status_code, "location": resp.headers.get("Location"), "body": payload}
+        if self.use_cache:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"url": url, "params": _redact(params), "body": body}, ensure_ascii=False),
+                            encoding="utf-8")
         return body
 
     def get_json(self, url: str, params: dict[str, Any] | None = None, **kw) -> Any:

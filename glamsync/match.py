@@ -208,7 +208,16 @@ def wikidata_format_findings(
                     continue
                 f = Finding(prop, FORMATFEHLER, qid, "wikidata", "", c.normalized, sorted(present),
                             old_value=s.value, note=c.problem or "")
-                if c.normalized is None or c.normalized == s.value:
+                if c.normalized is None:
+                    # ungültige ID → Löschung vorschlagen (wie Korrekturen nur ohne Quellen/Qualifier)
+                    if s.has_refs or s.has_qualifiers:
+                        f.note += "; ungültig, aber Aussage hat Quellen/Qualifier – manuell prüfen"
+                    else:
+                        f.action = "delete"
+                        f.note += "; ungültig – Löschung vorgeschlagen"
+                        if "P727" in f.note:
+                            f.note += " (Wert ggf. vorher nach P727 übertragen)"
+                elif c.normalized == s.value:
                     f.note += "; nicht automatisch korrigierbar"
                 elif s.has_refs or s.has_qualifiers:
                     f.note += "; alte Aussage hat Quellen/Qualifier – manuell prüfen"
@@ -272,3 +281,42 @@ def name_candidates(
                     "qid": qid, "wikidata_label": items[qid].label, "score": f"{score:.2f}",
                 })
     return rows
+
+
+# --- Orte (Städte) ----------------------------------------------------------------
+def classify_city(qid: str, item: WikidataItem, places: list[SourceRecord], lookups: Lookups,
+                  record_counts: dict[str, int] | None = None) -> Finding:
+    """P7704 für eine Wikidata-Stadt anhand der per sameAs aufgelösten Europeana-Orte.
+
+    - kein Ort                → kein_treffer (nur Bericht)
+    - genau ein Ort           → wie beim Organisationsabgleich (identisch / fehlt / formatfehler / konflikt …)
+    - mehrere Orte (Dublette in Europeana; P7704 ist einwertig):
+        * Wikidata führt bereits einen davon → dieser zählt
+        * genau ein Ort hat die meisten verknüpften Objekte (recordCount > 0) → dieser wird vorgeschlagen
+        * sonst mehrdeutig (nur Bericht)
+    """
+    wd_raw = [s.value for s in item.values("P7704")]
+    if not places:
+        return Finding("P7704", KEIN_TREFFER, qid, "europeana", "", None, wd_raw,
+                       note="kein Europeana-Ort mit sameAs auf diese QID")
+    if len(places) == 1:
+        return classify_property(places[0], qid, item, "P7704", lookups)
+
+    ids = [p.ids["P7704"][0] for p in places]
+    note = f"Europeana führt {len(places)} Orte mit sameAs auf {qid}: {', '.join(ids)}"
+    present = {normalize("P7704", v) for v in wd_raw}
+    hit = [v for v in ids if v in present]
+    if hit:
+        f = classify_property(next(p for p in places if p.ids["P7704"][0] == hit[0]), qid, item, "P7704", lookups)
+        f.note = "; ".join(x for x in (f.note, note) if x)
+        return f
+    counts = record_counts or {}
+    ranked = sorted(places, key=lambda p: counts.get(p.source_id, 0), reverse=True)
+    best, second = counts.get(ranked[0].source_id, 0), counts.get(ranked[1].source_id, 0)
+    if best > second:
+        f = classify_property(ranked[0], qid, item, "P7704", lookups)
+        detail = ", ".join(f"{p.ids['P7704'][0]}: {counts.get(p.source_id, 0)} Objekte" for p in ranked)
+        f.note = "; ".join(x for x in (f.note, f"{note}; gewählt nach verknüpften Objekten ({detail})") if x)
+        return f
+    return Finding("P7704", MEHRDEUTIG, qid, "europeana", ",".join(p.source_id for p in places), "|".join(ids),
+                   wd_raw, note=note + " – manuell wählen")

@@ -79,13 +79,19 @@ def test_fehlt_but_value_used_elsewhere():
     assert f.status == MEHRDEUTIG and "Q2" in f.note
 
 
-def test_formatfehler_fix():
+def test_organization_spelling_is_identical():
+    # beide Schreibweisen lösen bei Europeana auf → keine Korrektur
     f = classify_property(rec(P7704=["organisation/4373"]), "Q1", item(P7704=["organization/4373"]), "P7704", NO_LOOKUPS)
-    assert f.status == FORMATFEHLER and f.action == "fix" and f.old_value == "organization/4373"
+    assert f.status == IDENTISCH and f.action is None
+
+
+def test_formatfehler_fix():
+    f = classify_property(rec(P7704=["organisation/4373"]), "Q1", item(P7704=["http://data.europeana.eu/organisation/4373"]), "P7704", NO_LOOKUPS)
+    assert f.status == FORMATFEHLER and f.action == "fix" and f.old_value == "http://data.europeana.eu/organisation/4373"
 
 
 def test_formatfehler_with_refs_is_report_only():
-    it = item(P7704=[st("organization/4373", refs=True)])
+    it = item(P7704=[st("http://data.europeana.eu/organisation/4373", refs=True)])
     f = classify_property(rec(P7704=["organisation/4373"]), "Q1", it, "P7704", NO_LOOKUPS)
     assert f.status == FORMATFEHLER and f.action is None and "manuell" in f.note
 
@@ -125,20 +131,34 @@ def test_collisions():
 
 # --- Wikidata-Formatprüfung -----------------------------------------------------
 def test_wikidata_format_findings():
-    items = {"Q1": item(P7704=["organization/4373"], P213=["0000 0001 2290 5087"])}
+    items = {"Q1": item(P7704=["http://data.europeana.eu/organisation/4373"], P213=["0000 0001 2290 5087"])}
     fs = {f.prop: f for f in wikidata_format_findings(items, {"4373"}, set())}
     assert fs["P7704"].action == "fix" and fs["P7704"].source == "europeana"
     assert fs["P213"].action == "fix" and fs["P213"].source_value == "0000000122905087"
 
 
 def test_wikidata_format_unknown_org_id_not_fixed():
-    fs = wikidata_format_findings({"Q1": item(P7704=["organization/99999"])}, {"4373"}, set())
+    fs = wikidata_format_findings({"Q1": item(P7704=["http://data.europeana.eu/organisation/99999"])}, {"4373"}, set())
     assert fs[0].action is None
 
 
-def test_wikidata_garbage_p7704_report_only():
+def test_wikidata_organization_spelling_no_finding():
+    assert wikidata_format_findings({"Q1": item(P7704=["organization/4373"])}, {"4373"}, set()) == []
+
+
+def test_wikidata_invalid_p7704_delete():
     fs = wikidata_format_findings({"Q1": item(P7704=["item/2048128/618580"])}, set(), set())
-    assert fs[0].action is None and "P727" in fs[0].note
+    assert fs[0].action == "delete" and "P727" in fs[0].note
+
+
+def test_wikidata_invalid_with_refs_report_only():
+    fs = wikidata_format_findings({"Q1": item(P791=[st("DE-MUS", refs=True)])}, set(), set())
+    assert fs[0].action is None and "manuell" in fs[0].note
+
+
+def test_qs_delete():
+    f = Finding("P791", FORMATFEHLER, "Q1", "wikidata", "", None, ["DE-MUS"], old_value="DE-MUS", action="delete")
+    assert qs_commands([f, f], "P791", "delete", "2026-11-16") == [['-Q1|P791|"DE-MUS"']]
 
 
 def test_p7704_duplicates():
