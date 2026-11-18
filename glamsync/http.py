@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import time
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -29,6 +30,7 @@ MIN_INTERVAL = {
     "api.deutsche-digitale-bibliothek.de": 0.2,
     "isil.staatsbibliothek-berlin.de": 0.5,
     "museen-in-oesterreich.at": 0.5,
+    "lobid.org": 0.2,
 }
 
 
@@ -82,12 +84,16 @@ class CachedClient:
         headers: dict[str, str] | None = None,
         timeout: float = 90,
         allow_404: bool = False,
+        transform: Callable[[Any], Any] | None = None,
+        cache_tag: str = "",
     ) -> Any:
         """Liefert die JSON-Antwort (aus dem Cache, falls vorhanden).
 
         Bei allow_404=True wird für 404 None zurückgegeben (und ebenfalls gecacht).
+        `transform` verkleinert die Antwort vor dem Cachen (z. B. nur benötigte Felder);
+        `cache_tag` trennt solche Einträge vom Rohcache derselben URL.
         """
-        path = self._cache_path(method, url, params, data)
+        path = self._cache_path(method + cache_tag, url, params, data)
         host = urlsplit(url).netloc
         if self.use_cache and cache_fresh(path, host):
             return json.loads(path.read_text(encoding="utf-8"))["body"]
@@ -113,6 +119,15 @@ class CachedClient:
                 log.warning("HTTP %s von %s, warte %ss", resp.status_code, host, delay)
                 time.sleep(delay)
                 continue
+            if resp.ok and attempt < self.max_retries:
+                # abgeschnittene Antwort (z. B. SPARQL-Timeout mitten im Stream) → neu versuchen
+                try:
+                    resp.json()
+                except ValueError:
+                    delay = 2 ** (attempt + 1)
+                    log.warning("Unvollständige JSON-Antwort von %s, neuer Versuch in %ss", host, delay)
+                    time.sleep(delay)
+                    continue
             break
 
         if resp.status_code == 404 and allow_404:
@@ -126,6 +141,8 @@ class CachedClient:
                     response=resp,
                 )
             body = resp.json()
+            if transform is not None:
+                body = transform(body)
 
         if self.use_cache:
             path.parent.mkdir(parents=True, exist_ok=True)

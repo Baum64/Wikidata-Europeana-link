@@ -1,4 +1,4 @@
-"""Kommandozeile: python -m glamsync {fetch,compare,export-qs,registry,cities} …"""
+"""Kommandozeile: python -m glamsync {fetch,compare,export-qs,registry,cities,persons} …"""
 
 from __future__ import annotations
 
@@ -55,6 +55,10 @@ def main(argv: list[str] | None = None) -> None:
                     help="zusätzlich jede Stadt (Q515) ab dieser Einwohnerzahl (Standard: 100000)")
     st.add_argument("--subclasses", action=argparse.BooleanOptionalAction, default=True, help=SUB_HELP)
 
+    pe = sub.add_parser("persons", help="Personen: Europeana-Agents ↔ Wikidata (P7704 agent/base/…, P227)")
+    pe.add_argument("--no-gnd-check", action="store_true",
+                    help="GND nicht über lobid prüfen (dann keine P227-Vorschläge)")
+
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(levelname)s %(name)s: %(message)s")
@@ -82,6 +86,11 @@ def main(argv: list[str] | None = None) -> None:
         s = pipeline.cities_compare(client, args.country, args.city_class, args.subclasses,
                                     args.min_population)
         print(f"Fertig. Siehe out/staedte_{s['country']}_{s['date']}.md")
+        for name in s["files"]:
+            print("out/" + name)
+    elif args.cmd == "persons":
+        s = pipeline.persons_compare(client, check_gnd=not args.no_gnd_check)
+        print(f"Fertig. Siehe out/personen_{s['date']}.md")
         for name in s["files"]:
             print("out/" + name)
     elif args.cmd == "export-qs":

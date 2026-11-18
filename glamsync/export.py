@@ -84,15 +84,16 @@ def split_parts(groups: list[list[str]], size: int = BLOCK_SIZE) -> list[list[st
 
 
 def write_qs(findings: list[Finding], prop: str, action: str, date: str | None = None,
-             out_dir: Path | None = None, tag: str = "") -> list[Path]:
+             out_dir: Path | None = None, tag: str = "", label: str | None = None) -> list[Path]:
     """Schreibt QS-Dateien in Teilen à max. 50 Zeilen (…_part01.qs usw.).
 
-    `tag` unterscheidet weitere Abgleiche im Dateinamen, z. B. 'staedte_Q183'.
+    `tag` unterscheidet weitere Abgleiche im Dateinamen, z. B. 'staedte_Q183';
+    `label` ersetzt die Aktionsbezeichnung (z. B. 'loeschen_pruefen').
     """
     date = date or today()
     out_dir = out_dir or config.OUT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
-    label = ACTION_LABELS[action]
+    label = label or ACTION_LABELS[action]
     stem = f"quickstatements_{prop}_{tag + '_' if tag else ''}{label}_{date}"
     for old in out_dir.glob(f"{stem}_part*.qs"):
         old.unlink()
@@ -320,4 +321,37 @@ def write_city_summary(s: dict, path: Path) -> None:
     if s.get("duplicates"):
         lines += ["", "## Europeana-Dubletten (mehrere Orte mit derselben QID)", ""]
         lines += [f"- {d}" for d in s["duplicates"]]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+# --- Personenabgleich (Europeana-Agents) ------------------------------------------
+def write_person_report(rows: list[dict], path: Path) -> None:
+    cols = ["qid", "wikidata_label", "property", "status", "europeana_id", "europeana_label", "europeana_url",
+            "vorschlag", "wikidata", "aktion", "hinweis"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=cols, delimiter=";")
+        w.writeheader()
+        w.writerows(rows)
+
+
+def write_person_summary(s: dict, path: Path) -> None:
+    def table(title: str, counts: dict) -> list[str]:
+        out = ["", f"## {title}", "", "| Status | Anzahl |", "|---|---:|"]
+        out += [f"| {k} | {v} |" for k, v in counts.items()] or ["| – | 0 |"]
+        return out
+
+    lines = [
+        f"# Personenabgleich Europeana-Agents ↔ Wikidata ({s['date']})",
+        "",
+        f"- Europeana-Agents: **{s['agents']}**, zugeordnete Wikidata-Items: **{s['items']}**",
+        f"- vorhandene agent-Werte (P7704) in Wikidata: {s['wikidata_values']}",
+        "- Zuordnung über sameAs → QID; GND als Gegenprobe. Kein Namensabgleich.",
+        f"- P227-Vorschläge nur nach Prüfung über lobid-gnd ({s['gnd_checked']} GND geprüft).",
+        "- Fundstelle: S248 Europeana (Q234110) + S813 Abrufdatum.",
+    ]
+    lines += table("P7704 Europeana entity", s["p7704"])
+    lines += table("P227 GND", s["p227"])
+    lines += table("Bereinigung: Wikidata-Werte ohne Europeana-Agent", s["cleanup"])
+    lines += ["", "## QuickStatements", ""] + ([f"- `{f}`" for f in s["files"]] or ["- keine"])
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

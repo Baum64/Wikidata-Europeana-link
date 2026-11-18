@@ -20,7 +20,7 @@ from .match import (
     resolve_collisions,
     wikidata_format_findings,
 )
-from .models import FEHLT, FORMATFEHLER, IDENTISCH, KONFLIKT, MEHRDEUTIG, Finding, SourceRecord, Statement, WikidataItem
+from .models import FEHLT, FORMATFEHLER, IDENTISCH, KEIN_TREFFER, KONFLIKT, MEHRDEUTIG, Finding, SourceRecord, Statement, WikidataItem
 from .normalize import PROPERTIES, compare_key, normalize
 from .sources import ddb, europeana
 from .sources.wikidata import TYPES, Wikidata
@@ -440,4 +440,165 @@ def cities_compare(client: CachedClient, country: str = "europa", city_class: st
     if wd_findings:
         summary["status"]["formatpruefung_wikidata"] = len(wd_findings)
     export.write_city_summary(summary, out / f"staedte_{tag_country}_{date}.md")
+    return summary
+
+
+# --- Personen: Europeana-Agents ↔ Wikidata (P7704 agent/base/<n>, P227) -------------
+def persons_compare(client: CachedClient, check_gnd: bool = True) -> dict:
+    from collections import defaultdict
+
+    from . import persons as P
+    from .sources import agents as agent_src
+    from .sources import places
+    from .sources.gnd import gnd_info, gnd_problem
+
+    wd = Wikidata(client)
+    date = export.today()
+
+    # 1. Europeana-Agents
+    recs = [agent_src.to_record(a) for a in agent_src.fetch_all(client)]
+    by_num = {r.source_id: r for r in recs}
+
+    # 2. Alle agent/…-Werte in Wikidata (eine Abfrage, ~160.000 Zeilen)
+    scan = wd.agent_query("""
+SELECT ?item ?v WHERE {
+  ?item p:P7704 ?st . ?st ps:P7704 ?v ; wikibase:rank ?rank .
+  FILTER(STRSTARTS(?v, "{prefix}")) FILTER(?rank != wikibase:DeprecatedRank)
+}""")
+    present: dict[str, set[str]] = defaultdict(set)
+    value_owner: dict[str, set[str]] = defaultdict(set)
+    for r in scan:
+        q, v = r["item"].rsplit("/", 1)[-1], normalize("P7704", r["v"]) or r["v"]
+        present[q].add(v)
+        value_owner[v].add(q)
+    log.info("Wikidata: %d agent-Werte an %d Items", len(scan), len(present))
+
+    # 3. Gruppierung nach QID (sameAs); Agents mit mehreren QIDs nur Bericht
+    groups: dict[str, list] = defaultdict(list)
+    multi: list[Finding] = []
+    no_qid = []
+    for r in recs:
+        if len(r.qids) == 1:
+            groups[r.qids[0]].append(r)
+        elif r.qids:
+            multi.append(Finding("P7704", MEHRDEUTIG, "", "europeana", r.source_id, P.agent_value(r), [],
+                                 note=f"sameAs nennt mehrere QIDs: {', '.join(r.qids)}"))
+        else:
+            no_qid.append(r)
+    # Rückfall ohne QID: GND → P227 (nur bei eindeutigem Treffer)
+    if no_qid:
+        owners = wd.lookup("P227", {g for r in no_qid for g in r.ids["P227"]})
+        for r in no_qid:
+            hits = {q for g in r.ids["P227"] for q in owners.get(g, [])}
+            if len(hits) == 1:
+                groups[hits.pop()].append(r)
+            else:
+                multi.append(Finding("P7704", MEHRDEUTIG if hits else KEIN_TREFFER, "", "europeana",
+                                     r.source_id, P.agent_value(r), [],
+                                     note=f"ohne QID; GND trifft {', '.join(sorted(hits)) or 'nichts'}"))
+
+    # 4. Detaildaten: Items ohne agent-Wert und – für P227 – zugeordnete Items ohne GND
+    gap = {q for q in groups if not present.get(q)}
+    no_gnd = {r["item"].rsplit("/", 1)[-1] for r in wd.agent_query("""
+SELECT ?item WHERE { ?item wdt:P7704 ?v . FILTER(STRSTARTS(?v, "{prefix}")) FILTER NOT EXISTS { ?item wdt:P227 ?g } }""")}
+    gnd_cands = {q for q in groups if q in no_gnd and any(r.ids["P227"] for r in groups[q])}
+    items = wd.fetch_items(gap | gnd_cands)
+    missing = {q for q, it in items.items() if not (it.labels or it.p31 or it.claims)}
+    redirects = wd.resolve_redirects(missing) if missing else {}
+    for old, new in redirects.items():
+        groups[new].extend(groups.pop(old))
+        items.pop(old, None)
+    new_targets = {t for t in redirects.values() if t not in items and not present.get(t)}
+    if new_targets:
+        items.update(wd.fetch_items(new_targets))
+    log.info("Personen: %d Items ohne agent-Wert, %d Kandidaten für P227, %d Weiterleitungen",
+             len(gap), len(gnd_cands), len(redirects))
+
+    # 5. Wem gehören die GND in Wikidata?
+    relevant_gnd = {g for q in groups if q in items for r in groups[q] for g in r.ids["P227"]}
+    gnd_owner = {g: set(qs) for g, qs in wd.lookup("P227", relevant_gnd).items()} if relevant_gnd else {}
+
+    # 6. Europeana-Dubletten: Objektzahlen nur dort abrufen, wo nötig
+    counts: dict[str, int] = {}
+    for q, rs in groups.items():
+        if len(rs) > 1 and not present.get(q) and q in items:
+            for r in rs:
+                counts[r.source_id] = places.record_count(agent_src.fetch_agent(client, r.source_id))
+
+    # 7. Klassifikation P7704
+    findings: list[Finding] = list(multi)
+    matched: dict[str, object] = {}
+    for q, rs in groups.items():
+        item = None if q in missing else items.get(q)  # verbliebene „missing“ = gelöschte Items
+        f, rec = P.classify_person(q, rs, present.get(q, set()), item, value_owner, gnd_owner, counts)
+        findings.append(f)
+        if rec is not None and f.status in (IDENTISCH, FEHLT):
+            matched[q] = rec
+    resolve_collisions(findings)
+
+    # 8. P227 aus Europeana, geprüft über lobid
+    gnd_problems: dict[str, str | None] = {}
+    todo = {r.ids["P227"][0] for q, r in matched.items()
+            if q in items and len(r.ids["P227"]) == 1 and not items[q].values("P227")
+            and "Q5" in items[q].p31 and not (gnd_owner.get(r.ids["P227"][0], set()) - {q})}
+    if check_gnd:
+        log.info("lobid: prüfe %d GND", len(todo))
+        for g in sorted(todo):
+            gnd_problems[g] = gnd_problem(g, gnd_info(client, g))
+    gnd_findings = [f for q, r in matched.items()
+                    if (f := P.person_gnd(q, r, items.get(q), gnd_owner, gnd_problems)) is not None]
+
+    # 9. Rückwärts: Wikidata-Werte, deren Nummer Europeana nicht (mehr) führt
+    orphan = [(q, v) for q, vs in present.items() for v in vs if v.rsplit("/", 1)[-1] not in by_num]
+    log.info("Wikidata-Werte ohne Europeana-Agent in der Liste: %d", len(orphan))
+    orphan_items = wd.fetch_items({q for q, _ in orphan}) if orphan else {}
+    cleanups = []
+    for q, v in orphan:
+        st = next((s for s in orphan_items.get(q, WikidataItem(q)).values("P7704")
+                   if normalize("P7704", s.value) == v), None)
+        c = P.agent_cleanup(q, v, agent_src.fetch_agent(client, v.rsplit("/", 1)[-1]),
+                            bool(st and st.has_refs), bool(st and st.has_qualifiers), value_owner)
+        if c:
+            c.old_raw = st.value if st else v  # Rohwert, wie er in Wikidata steht
+            cleanups.append(c)
+    cleanup_findings = [
+        Finding("P7704", FORMATFEHLER if c.kind == "zusammengefuehrt" else KONFLIKT, c.qid, "europeana",
+                (c.new_value or "").rsplit("/", 1)[-1], c.new_value,
+                sorted(present.get(c.qid, set())), old_value=c.old_raw, action=c.action, note=c.note)
+        for c in cleanups]
+    for f in cleanup_findings:
+        if f.action == "fix" and f.source_value in f.wikidata_values:
+            f.note += "; korrekter Wert bereits vorhanden – nur löschen"
+
+    # 10. Ausgabe
+    out = config.OUT_DIR
+    files = []
+    files += export.write_qs(findings, "P7704", "new", date, tag="personen")
+    files += export.write_qs(gnd_findings, "P227", "new", date, tag="personen")
+    files += export.write_qs(cleanup_findings, "P7704", "fix", date, tag="personen")
+    files += export.write_qs(cleanup_findings, "P7704", "delete", date, tag="personen", label="loeschen_pruefen")
+
+    labels = {q: it.label for q, it in {**orphan_items, **items}.items()}
+    rows = []
+    for f in findings + gnd_findings + cleanup_findings:
+        if f.prop == "P7704" and f.status == IDENTISCH:
+            continue  # nur Abweichungen in den Bericht (identische zählt die Zusammenfassung)
+        rec = by_num.get((f.source_id or "").split(",")[0])
+        rows.append({
+            "qid": f.qid, "wikidata_label": labels.get(f.qid, ""), "property": f.prop, "status": f.status,
+            "europeana_id": f.source_id or "", "europeana_label": rec.label if rec else "",
+            "europeana_url": rec.url if rec else "", "vorschlag": f.source_value or "",
+            "wikidata": f.old_value or "|".join(f.wikidata_values), "aktion": f.action or "", "hinweis": f.note,
+        })
+    rows.sort(key=lambda r: (r["property"], r["status"], r["qid"]))
+    export.write_person_report(rows, out / f"personen_{date}.csv")
+
+    summary = {
+        "date": date, "agents": len(recs), "wikidata_values": len(scan), "items": len(groups),
+        "p7704": dict(Counter(f.status for f in findings).most_common()),
+        "p227": dict(Counter(f.status for f in gnd_findings).most_common()),
+        "cleanup": dict(Counter(f"{c.kind}/{c.action or 'bericht'}" for c in cleanups).most_common()),
+        "gnd_checked": len(gnd_problems), "files": [p.name for p in files],
+    }
+    export.write_person_summary(summary, out / f"personen_{date}.md")
     return summary

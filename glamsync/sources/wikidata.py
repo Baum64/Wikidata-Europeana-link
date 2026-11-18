@@ -211,6 +211,16 @@ SELECT ?item ?v ?hasRef ?hasQual WHERE {{
         return [{"qid": _strip(r["item"]), "value": r["v"], "has_refs": r["hasRef"] == "true",
                  "has_qualifiers": r["hasQual"] == "true"} for r in rows]
 
+    def agent_query(self, body: str) -> list[dict[str, str]]:
+        """Abfrage über alle agent/base/<n>-Werte, zerlegt nach erster Ziffer (vermeidet Timeouts).
+
+        `body` enthält den Platzhalter {prefix} für FILTER(STRSTARTS(?v, "{prefix}")).
+        """
+        rows: list[dict[str, str]] = []
+        for d in "123456789":
+            rows += self.query(body.replace("{prefix}", f"agent/base/{d}"))
+        return rows
+
     def p7704_non_agent(self) -> list[dict[str, str]]:
         """Alle P7704-Aussagen außer agent/… (Organisationen, Orte, Begriffe, Fehlformen)."""
         rows = self.query("""

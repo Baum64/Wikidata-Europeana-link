@@ -233,6 +233,88 @@ python -m glamsync cities --country Q183,Q40,Q39 --min-population 50000
   Stadt“ (sameAs Q250880). Graz selbst ist `place/base/80868`.
 - München heißt in Europeana fälschlich „Monaco“; sameAs, GND und Koordinaten passen aber.
 
+## Personen: Europeana-Agents ↔ Wikidata (P7704, P227)
+
+```bash
+python -m glamsync persons                 # alle ~170.000 Europeana-Agents
+python -m glamsync persons --no-gnd-check  # ohne lobid-Prüfung (dann keine P227-Vorschläge)
+```
+
+### Konzept
+
+**Ziel.** Europeana führt rund 170.000 Agents (überwiegend Personen) unter
+`http://data.europeana.eu/agent/<n>`. Für Personen in Wikidata werden zwei Werte ergänzt:
+
+- **P7704** `agent/base/<n>`, die Verknüpfung zu Europeana;
+- **P227 GND**, wenn sie in Wikidata fehlt und Europeana sie nennt.
+
+**Datenlage (geprüft 18.11.2026).**
+
+- Alle Agents der Stichprobe (700) haben im sameAs eine Wikidata-QID, gut die Hälfte (388)
+  zusätzlich eine GND.
+- Wikidata führt bereits 158.437 `agent/base/…`-Werte. Die Lücke ist also klein im
+  Verhältnis, aber in absoluten Zahlen relevant.
+- DDB-Personenseiten haben keine eigene Wikidata-Property, sie sind über die GND adressiert.
+  Deshalb ist die DDB hier keine eigene Quelle.
+
+**Schlüssel und Reihenfolge.**
+
+1. **sameAs → QID.** Weiterleitungen werden aufgelöst, gelöschte Items werden zu `kein_treffer`.
+2. **GND** dient als Gegenprobe: Zeigt die GND des Agents in Wikidata auf ein *anderes* Item,
+   ist der Fall `mehrdeutig` und wird nur berichtet. Agents ganz ohne QID werden nur bei
+   eindeutigem GND-Treffer (P227) zugeordnet.
+3. Es gibt keinen Namensabgleich.
+
+**Klassifikation P7704** (je Wikidata-Item, P7704 ist einwertig).
+
+| Status | Bedeutung | Aktion |
+|---|---|---|
+| `identisch` | Wikidata führt einen der Agents dieses Items | – |
+| `fehlt_in_wikidata` | Mensch (P31 Q5) ohne agent-Wert, Agent frei, GND widerspricht nicht | QS neu |
+| `konflikt` | Wikidata führt einen anderen Agent | Bericht |
+| `mehrdeutig` | Dublette ohne Favorit, Agent schon an anderem Item, GND zeigt auf anderes Item, sameAs mit mehreren QIDs | Bericht |
+| `kein_mensch` | Item ist kein Mensch (Organisation, Gruppe, fiktive Figur …) | Bericht |
+| `kein_treffer` | QID existiert nicht | Bericht |
+
+Europeana-Dubletten (mehrere Agents → dieselbe QID) werden wie bei den Städten nach den
+meisten verknüpften Objekten (`isAggregatedBy.recordCount`) entschieden, bei Gleichstand
+nur berichtet.
+
+**P227 GND.** Ein Vorschlag entsteht nur, wenn alle Bedingungen erfüllt sind:
+
+- das Item ist sicher zugeordnet (`identisch` oder `fehlt_in_wikidata`) und ein Mensch;
+- in Wikidata fehlt P227;
+- Europeana nennt genau eine GND, und diese hängt an keinem anderen Item;
+- **lobid-gnd** bestätigt eine aktuelle Personen-GND (`DifferentiatedPerson`), die nicht
+  umgelenkt wurde. Ist die GND nicht prüfbar, keine Person oder umgelenkt, erhält der Fall
+  den Status `gnd_problem` und steht nur im Bericht.
+
+**Bereinigung (Rückrichtung).** Wikidata-Werte `agent/base/<n>`, deren Nummer in der
+Europeana-Liste fehlt, werden einzeln abgefragt:
+
+- **404** → `loeschen_pruefen` (Agent existiert nicht mehr);
+- **Weiterleitung auf eine andere Nummer** → Korrektur auf den neuen Wert (Europeana hat
+  zusammengeführt).
+
+In beiden Fällen gilt: nur ohne Quellen/Qualifier, sonst nur Bericht.
+
+**Ausgabe.**
+
+- `out/quickstatements_P7704_personen_neu_<datum>_partNN.qs`
+- `out/quickstatements_P227_personen_neu_<datum>_partNN.qs`
+- `out/quickstatements_P7704_personen_korrektur_<datum>_partNN.qs` und `…_personen_loeschen_pruefen_…`
+- `out/personen_<datum>.csv` (nur Abweichungen) und `out/personen_<datum>.md` (Zusammenfassung)
+
+Alle Vorschläge haben die Fundstelle S248 Europeana (Q234110) + S813.
+
+**Aufwand.**
+
+- Europeana: rund 1.700 Seiten à 100. Gecacht wird nur die kompakte Form (id, Label, QIDs,
+  GND).
+- Wikidata: Der Bestand wird in einer Abfrage geladen; Detaildaten werden nur für die Lücke
+  und die P227-Kandidaten abgerufen.
+- lobid: nur für die GND, die als P227 vorgeschlagen würden.
+
 ## Erkundung der Quellen
 
 ```bash
@@ -306,10 +388,12 @@ User-API eine Authentifizierung (Bearer/JWT); `/version/test-auth` liefert ohne 
 glamsync/
   config.py, http.py        # Konfiguration, HTTP-Client mit Cache, Drosselung und Retry
   sources/                  # wikidata.py, europeana.py, ddb.py, places.py (Europeana-Orte),
+                            # agents.py (Europeana-Personen), gnd.py (lobid-Prüfung),
                             # registry.py (ISIL-Verzeichnis, Museen in Österreich)
   normalize.py              # ID-Formate
   match.py                  # Zuordnung und Klassifikation (ohne Netz, getestet)
   registry.py               # Registerabgleich über Name + Website (ohne Netz, getestet)
+  persons.py                # Personenabgleich Europeana-Agents (ohne Netz, getestet)
   pipeline.py               # Ablauf fetch / compare / export-qs
   export.py, __main__.py    # Ausgabe, CLI
 explore/                    # Erkundungsskripte
