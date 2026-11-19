@@ -39,8 +39,9 @@ def fetch_all(client: CachedClient) -> list[dict]:
     agents: list[dict] = []
     page = 1
     while True:
+        # ohne feste Sortierung ist das Deep Paging instabil (Dubletten, fehlende Agents)
         d = client.get_json(f"{E}/search", params={"query": "*", "type": "agent", "page": page, "pageSize": 100,
-                                                   "fl": FIELDS, "wskey": key},
+                                                   "sort": "id asc", "fl": FIELDS, "wskey": key},
                             transform=_compact, cache_tag=":compact")
         agents.extend(d["items"])
         if page % 100 == 0:
@@ -48,8 +49,11 @@ def fetch_all(client: CachedClient) -> list[dict]:
         if not d["items"] or not d["next"]:
             break
         page += 1
-    log.info("Europeana: %d Agents geladen", len(agents))
-    return agents
+    unique = list({a["id"]: a for a in agents}.values())
+    if len(unique) < len(agents):
+        log.warning("Europeana: %d doppelte Agents in der Seitenfolge verworfen", len(agents) - len(unique))
+    log.info("Europeana: %d Agents geladen", len(unique))
+    return unique
 
 
 def to_record(a: dict) -> SourceRecord:

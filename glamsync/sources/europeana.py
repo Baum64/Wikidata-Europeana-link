@@ -35,7 +35,8 @@ def fetch_all_raw(client: CachedClient, page_size: int = 100) -> list[dict]:
     while True:
         d = client.get_json(
             f"{E}/search",
-            params={"query": "*", "type": "organization", "page": page, "pageSize": page_size, "wskey": key},
+            params={"query": "*", "type": "organization", "page": page, "pageSize": page_size,
+                    "sort": "id asc", "wskey": key},
         )
         batch = d.get("items") or []
         items.extend(batch)

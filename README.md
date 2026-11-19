@@ -81,7 +81,7 @@ Weitere Optionen: `--types museum,library,archive`, `--sources europeana,ddb`, `
 | `summary_<datum>.md` | Zählungen: Grundmenge vorher → nachher-Potenzial, Zuordnung, Klassifikation, QS-Umfang |
 | `report_<datum>.csv` | eine Zeile je Quell-Einrichtung (Klassifikation je Property, Trefferquelle) plus Zeilen `nur_wikidata` für reine Formatbefunde; Trennzeichen `;` |
 | `kandidaten_namen_<datum>.csv` | nicht zugeordnete Einrichtungen mit ähnlich benannten Items, **nur zur Handprüfung** |
-| `quickstatements_<P>_{neu,korrektur,loeschen}_<datum>_partNN.qs` | max. 50 Zeilen je Datei; Korrekturpaare (Löschen + Neu) werden nicht getrennt; `loeschen` = ungültige Werte |
+| `qs_<P>_{neu,korrektur,loeschen}_<datum>_partNN.txt` | max. 500 Zeilen je Datei; Korrekturpaare (Löschen + Neu) werden nicht getrennt; `loeschen` = ungültige Werte |
 | `results_<datum>.json` | vollständige Ergebnisse, Grundlage für `export-qs` |
 
 Beispiel für eine neue Aussage mit Quellenangabe:
@@ -119,7 +119,7 @@ gibt; dann wird Europeana als Fundstelle gesetzt.
 
 **Ungültige Werte** (nicht reparierbares Format, z. B. Objekt-IDs `item/…` in P7704, die zu P727
 gehören, Werte ohne Präfix, `DE-MUS` ohne Nummer) werden **zur Löschung vorgeschlagen**
-(`quickstatements_<P>_loeschen_<datum>_partNN.qs`, Aktion `delete`), sofern die Aussage weder
+(`qs_<P>_loeschen_<datum>_partNN.txt`, Aktion `delete`), sofern die Aussage weder
 Quellen noch Qualifier hat; sonst nur Bericht. Objekt-IDs ggf. vorher nach P727 übertragen.
 Dubletten (ein P7704-Wert an mehreren Items) erscheinen nur im Bericht.
 
@@ -143,7 +143,7 @@ werden über den exakten Schlüssel erkannt. Für fehlende Werte gibt es nur Kan
 |---|---|---|
 | `vorhanden` | Wert steht an genau einem Item | – |
 | `vorhanden_pruefen` | Wert vorhanden, Name passt kaum (Ähnlichkeit < 0,5) | Bericht |
-| `kandidat_stark` | Item **ohne** diesen Wert mit **gleichem Namen UND gleicher Website** | `quickstatements_<P>_kandidaten_<land>_<datum>_partNN.qs` – **nur nach Handprüfung einspielen** |
+| `kandidat_stark` | Item **ohne** diesen Wert mit **gleichem Namen UND gleicher Website** | `qs_<P>_kandidaten_<land>_<datum>_partNN.txt` – **nur nach Handprüfung einspielen** |
 | `kandidat_schwach` | nur Name gleich, oder Website gleich + Name ähnlich, oder Name ähnlich + < 1 km | nur CSV |
 | `konflikt` | starker Kandidat hat schon einen anderen Wert | Bericht |
 | `mehrdeutig` | Wert an mehreren Items, oder ein Item ist starker Kandidat für mehrere Einträge | Bericht |
@@ -161,8 +161,8 @@ Kandidaten-Pool sind die Wikidata-Items des Landes mit P31/P279* = Museum/Biblio
 
 | Fall | QuickStatement |
 |---|---|
-| Wert hat ungültiges Format | `quickstatements_<P>_loeschen_<land>_<datum>_partNN.qs` |
-| Wert fehlt im Register | `quickstatements_<P>_loeschen_pruefen_<land>_<datum>_partNN.qs` – **vor dem Löschen prüfen**: kann eine aufgelöste Einrichtung (historisch korrekter Wert) oder ein Tippfehler sein |
+| Wert hat ungültiges Format | `qs_<P>_loeschen_<land>_<datum>_partNN.txt` |
+| Wert fehlt im Register | `qs_<P>_loeschen_pruefen_<land>_<datum>_partNN.txt` – **vor dem Löschen prüfen**: kann eine aufgelöste Einrichtung (historisch korrekter Wert) oder ein Tippfehler sein |
 
 Ausgabe in `out/`: `register_<quelle>_<land>_<datum>.md` (Zusammenfassung), `….csv` (alle
 Register-Einträge), `…_bereinigung.csv` (ungültige bzw. im Register fehlende Wikidata-Werte).
@@ -213,7 +213,7 @@ python -m glamsync cities --country Q183,Q40,Q39 --min-population 50000
 - **Ausgabe:**
   - `out/staedte_<land|europa>_<datum>.csv` (Bericht mit Länderspalte) und
     `out/staedte_<land|europa>_<datum>.md` (Zusammenfassung mit Tabelle je Land und Dublettenliste);
-  - `out/quickstatements_P7704_staedte_<land>_{neu,korrektur,loeschen}_<datum>_partNN.qs`,
+  - `out/qs_P7704_staedte_<land>_{neu,korrektur,loeschen}_<datum>_partNN.txt`,
     Fundstelle S248 Europeana (Q234110) + S813.
 
 **Ergebnis 16.11.2026 (Europa, 51 Länder, 802 Städte):**
@@ -300,20 +300,44 @@ In beiden Fällen gilt: nur ohne Quellen/Qualifier, sonst nur Bericht.
 
 **Ausgabe.**
 
-- `out/quickstatements_P7704_personen_neu_<datum>_partNN.qs`
-- `out/quickstatements_P227_personen_neu_<datum>_partNN.qs`
-- `out/quickstatements_P7704_personen_korrektur_<datum>_partNN.qs` und `…_personen_loeschen_pruefen_…`
+- `out/qs_P7704_personen_neu_<datum>_partNN.txt`
+- `out/qs_P227_personen_neu_<datum>_partNN.txt`
+- `out/qs_P7704_personen_korrektur_<datum>_partNN.txt` und `…_personen_loeschen_pruefen_…`
 - `out/personen_<datum>.csv` (nur Abweichungen) und `out/personen_<datum>.md` (Zusammenfassung)
 
 Alle Vorschläge haben die Fundstelle S248 Europeana (Q234110) + S813.
 
 **Aufwand.**
 
-- Europeana: rund 1.700 Seiten à 100. Gecacht wird nur die kompakte Form (id, Label, QIDs,
-  GND).
-- Wikidata: Der Bestand wird in einer Abfrage geladen; Detaildaten werden nur für die Lücke
-  und die P227-Kandidaten abgerufen.
+- Europeana: rund 1.700 Seiten à 100, **fest sortiert** (`sort=id asc`). Ohne Sortierung
+  liefert das Deep Paging Dubletten und lässt Agents aus (im ersten Lauf nur 131.165
+  verschiedene von 170.053). Gecacht wird nur die kompakte Form (id, Label, QIDs, GND).
+- Wikidata: Der Bestand wird in neun Teilabfragen (nach erster Ziffer der Nummer) geladen;
+  Detaildaten werden nur für die Lücke und die P227-Kandidaten abgerufen. Ein voller Lauf
+  dauert wegen der Wikidata-Drosselung (HTTP 429) rund 1–2 Stunden; Wiederholungen
+  kommen aus dem Cache.
 - lobid: nur für die GND, die als P227 vorgeschlagen würden.
+
+### Ergebnis (Lauf 19.11.2026)
+
+170.053 Europeana-Agents, 169.915 verschiedene Wikidata-Items, 158.387 vorhandene agent-Werte.
+
+| Status P7704 | Anzahl |
+|---|---:|
+| identisch | 156.986 |
+| fehlt_in_wikidata → QS | 12.067 |
+| kein_mensch | 463 |
+| konflikt | 366 |
+| mehrdeutig | 105 (85 sameAs mit mehreren QIDs, 18 Agent schon an anderem Item, 2 Dubletten) |
+| kein_treffer | 13 |
+
+- **P227: keine Vorschläge.** Jedes Item, für das Europeana eine GND nennt, hat sie in
+  Wikidata bereits eine P227 – Europeana hat seine GND-Verweise offenbar aus Wikidata übernommen.
+- **Bereinigung:** 1.218 Wikidata-Werte zeigen auf Agents, die Europeana nicht mehr kennt
+  (404). 1.215 davon haben Quellen/Qualifier (nur Bericht), 3 stehen in
+  `…_personen_loeschen_pruefen_…`. Zusammenführungen (Weiterleitungen) gab es keine.
+- In 194 Vorschlägen hat das Wikidata-Item kein deutsches/englisches Label; die Zuordnung
+  beruht wie alle anderen auf sameAs.
 
 ## Erkundung der Quellen
 

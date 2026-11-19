@@ -180,5 +180,9 @@ def test_qs_new_and_fix():
 
 
 def test_split_parts_keeps_pairs_together():
-    parts = split_parts([["a", "b"]] * 30)
+    parts = split_parts([["a", "b"]] * 30, size=50)
     assert [len(p) for p in parts] == [50, 10]
+
+
+def test_split_parts_default_500():
+    assert [len(p) for p in split_parts([["a"]] * 1203)] == [500, 500, 203]

@@ -15,7 +15,9 @@ from .sources.wikidata import SOURCE_ITEMS
 
 log = logging.getLogger(__name__)
 
-BLOCK_SIZE = 50
+BLOCK_SIZE = 500  # Zeilen je QS-Datei
+QS_PREFIX = "qs_"
+QS_EXT = ".txt"
 ACTION_LABELS = {"new": "neu", "fix": "korrektur", "delete": "loeschen"}
 PROP_NAMES = {"P7704": "Europeana entity", "P791": "ISIL", "P227": "GND", "P214": "VIAF", "P213": "ISNI"}
 
@@ -85,7 +87,7 @@ def split_parts(groups: list[list[str]], size: int = BLOCK_SIZE) -> list[list[st
 
 def write_qs(findings: list[Finding], prop: str, action: str, date: str | None = None,
              out_dir: Path | None = None, tag: str = "", label: str | None = None) -> list[Path]:
-    """Schreibt QS-Dateien in Teilen à max. 50 Zeilen (…_part01.qs usw.).
+    """Schreibt QS-Dateien in Teilen à max. BLOCK_SIZE Zeilen (qs_…_part01.txt usw.).
 
     `tag` unterscheidet weitere Abgleiche im Dateinamen, z. B. 'staedte_Q183';
     `label` ersetzt die Aktionsbezeichnung (z. B. 'loeschen_pruefen').
@@ -94,12 +96,12 @@ def write_qs(findings: list[Finding], prop: str, action: str, date: str | None =
     out_dir = out_dir or config.OUT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     label = label or ACTION_LABELS[action]
-    stem = f"quickstatements_{prop}_{tag + '_' if tag else ''}{label}_{date}"
-    for old in out_dir.glob(f"{stem}_part*.qs"):
+    stem = f"{QS_PREFIX}{prop}_{tag + '_' if tag else ''}{label}_{date}"
+    for old in out_dir.glob(f"{stem}_part*{QS_EXT}"):
         old.unlink()
     paths = []
     for i, lines in enumerate(split_parts(qs_commands(findings, prop, action, date)), 1):
-        p = out_dir / f"{stem}_part{i:02d}.qs"
+        p = out_dir / f"{stem}_part{i:02d}{QS_EXT}"
         p.write_text("\n".join(lines) + "\n", encoding="utf-8")
         paths.append(p)
     return paths
@@ -198,13 +200,13 @@ def write_registry_qs(matches, prop: str, source: str, country: str, date: str,
     from .registry import STARK
 
     out_dir = out_dir or config.OUT_DIR
-    for old in out_dir.glob(f"quickstatements_{prop}_kandidaten_{country}_{date}_part*.qs"):
+    for old in out_dir.glob(f"{QS_PREFIX}{prop}_kandidaten_{country}_{date}_part*{QS_EXT}"):
         old.unlink()
     groups = [[f"{m.qids[0]}|{prop}|{_qs_string(m.record.value)}{_registry_reference(source, m.record.url, date)}"]
               for m in matches if m.status == STARK]
     paths = []
     for i, lines in enumerate(split_parts(groups), 1):
-        p = out_dir / f"quickstatements_{prop}_kandidaten_{country}_{date}_part{i:02d}.qs"
+        p = out_dir / f"{QS_PREFIX}{prop}_kandidaten_{country}_{date}_part{i:02d}{QS_EXT}"
         p.write_text("\n".join(lines) + "\n", encoding="utf-8")
         paths.append(p)
     return paths
@@ -238,7 +240,7 @@ def write_registry_delete_qs(cleanup, prop: str, country: str, date: str, out_di
     out_dir = out_dir or config.OUT_DIR
     paths = []
     for kind, label in (("ungueltig", "loeschen"), ("nicht_im_register", "loeschen_pruefen")):
-        for old in out_dir.glob(f"quickstatements_{prop}_{label}_{country}_{date}_part*.qs"):
+        for old in out_dir.glob(f"{QS_PREFIX}{prop}_{label}_{country}_{date}_part*{QS_EXT}"):
             old.unlink()
         groups, seen = [], set()
         for c in cleanup:
@@ -247,7 +249,7 @@ def write_registry_delete_qs(cleanup, prop: str, country: str, date: str, out_di
                 seen.add(line)
                 groups.append([line])
         for i, lines in enumerate(split_parts(groups), 1):
-            p = out_dir / f"quickstatements_{prop}_{label}_{country}_{date}_part{i:02d}.qs"
+            p = out_dir / f"{QS_PREFIX}{prop}_{label}_{country}_{date}_part{i:02d}{QS_EXT}"
             p.write_text("\n".join(lines) + "\n", encoding="utf-8")
             paths.append(p)
     return paths

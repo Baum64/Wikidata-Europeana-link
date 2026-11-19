@@ -101,3 +101,20 @@ def test_agent_cleanup():
     assert agent_cleanup("Q1", "agent/base/5", {"id": "http://data.europeana.eu/agent/7"}, False, False,
                          {"agent/base/7": {"Q2"}}).action is None
     assert agent_cleanup("Q1", "agent/base/5", {"id": "http://data.europeana.eu/agent/5"}, False, False, {}) is None
+
+
+def test_fetch_all_dedupes_and_sorts(monkeypatch):
+    from glamsync.sources import agents
+
+    monkeypatch.setattr(agents, "_require_key", lambda: "x")
+    pages = {1: [{"id": "1", "label": "", "qids": [], "gnd": []}, {"id": "2", "label": "", "qids": [], "gnd": []}],
+             2: [{"id": "2", "label": "", "qids": [], "gnd": []}, {"id": "3", "label": "", "qids": [], "gnd": []}]}
+    seen = []
+
+    class Fake:
+        def get_json(self, url, params, **kw):
+            seen.append(params.get("sort"))
+            return {"items": pages[params["page"]], "next": params["page"] < 2, "total": 3}
+
+    assert [a["id"] for a in agents.fetch_all(Fake())] == ["1", "2", "3"]
+    assert seen == ["id asc", "id asc"]
