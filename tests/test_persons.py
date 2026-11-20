@@ -27,22 +27,22 @@ def test_compact_page():
             "next": "x", "partOf": {"total": 1}}
     assert _compact(page)["items"] == [{"id": "146741", "label": "Goethe", "qids": ["Q5879"], "gnd": ["118540238"]}]
     r = to_record(_compact(page)["items"][0])
-    assert r.ids == {"P7704": ["agent/base/146741"], "P227": ["118540238"]}
+    assert r.ids == {"P7704": ["agent/146741"], "P227": ["118540238"]}
 
 
 def test_identisch():
-    f, rec = classify_person("Q1", [agent(5)], {"agent/base/5"}, None, {}, {})
+    f, rec = classify_person("Q1", [agent(5)], {"agent/5"}, None, {}, {})
     assert f.status == IDENTISCH and rec.source_id == "5"
 
 
 def test_konflikt_other_agent():
-    f, rec = classify_person("Q1", [agent(5)], {"agent/base/9"}, None, {}, {})
+    f, rec = classify_person("Q1", [agent(5)], {"agent/9"}, None, {}, {})
     assert f.status == KONFLIKT and f.action is None and rec is None
 
 
 def test_new_for_human():
     f, rec = classify_person("Q1", [agent(5, ["118540238"])], set(), human("118540238"), {}, {"118540238": {"Q1"}})
-    assert f.status == FEHLT and f.action == "new" and f.source_value == "agent/base/5"
+    assert f.status == FEHLT and f.action == "new" and f.source_value == "agent/5"
 
 
 def test_missing_item_and_non_human():
@@ -51,7 +51,7 @@ def test_missing_item_and_non_human():
 
 
 def test_agent_already_on_other_item():
-    f, _ = classify_person("Q1", [agent(5)], set(), human(), {"agent/base/5": {"Q2"}}, {})
+    f, _ = classify_person("Q1", [agent(5)], set(), human(), {"agent/5": {"Q2"}}, {})
     assert f.status == MEHRDEUTIG and "Q2" in f.note
 
 
@@ -70,7 +70,7 @@ def test_duplicates():
     assert classify_person("Q1", recs, set(), human(), {}, {}, {"5": 0, "6": 0})[0].status == MEHRDEUTIG
     f, rec = classify_person("Q1", recs, set(), human(), {}, {}, {"5": 1, "6": 40})
     assert f.action == "new" and rec.source_id == "6"
-    assert classify_person("Q1", recs, {"agent/base/5"}, None, {}, {})[0].status == IDENTISCH
+    assert classify_person("Q1", recs, {"agent/5"}, None, {}, {})[0].status == IDENTISCH
 
 
 def test_person_gnd():
@@ -93,14 +93,14 @@ def test_gnd_problem():
 
 
 def test_agent_cleanup():
-    c = agent_cleanup("Q1", "agent/base/5", None, False, False, {})
+    c = agent_cleanup("Q1", "agent/5", None, False, False, {})
     assert c.kind == "nicht_in_europeana" and c.action == "delete"
-    assert agent_cleanup("Q1", "agent/base/5", None, True, False, {}).action is None
-    c = agent_cleanup("Q1", "agent/base/5", {"id": "http://data.europeana.eu/agent/7"}, False, False, {})
-    assert c.kind == "zusammengefuehrt" and c.action == "fix" and c.new_value == "agent/base/7"
-    assert agent_cleanup("Q1", "agent/base/5", {"id": "http://data.europeana.eu/agent/7"}, False, False,
-                         {"agent/base/7": {"Q2"}}).action is None
-    assert agent_cleanup("Q1", "agent/base/5", {"id": "http://data.europeana.eu/agent/5"}, False, False, {}) is None
+    assert agent_cleanup("Q1", "agent/5", None, True, False, {}).action is None
+    c = agent_cleanup("Q1", "agent/5", {"id": "http://data.europeana.eu/agent/7"}, False, False, {})
+    assert c.kind == "zusammengefuehrt" and c.action == "fix" and c.new_value == "agent/7"
+    assert agent_cleanup("Q1", "agent/5", {"id": "http://data.europeana.eu/agent/7"}, False, False,
+                         {"agent/7": {"Q2"}}).action is None
+    assert agent_cleanup("Q1", "agent/5", {"id": "http://data.europeana.eu/agent/5"}, False, False, {}) is None
 
 
 def test_fetch_all_dedupes_and_sorts(monkeypatch):
@@ -118,3 +118,15 @@ def test_fetch_all_dedupes_and_sorts(monkeypatch):
 
     assert [a["id"] for a in agents.fetch_all(Fake())] == ["1", "2", "3"]
     assert seen == ["id asc", "id asc"]
+
+
+def test_mark_without_objects():
+    from glamsync.models import FEHLT, IDENTISCH, Finding
+    from glamsync.persons import OHNE_OBJEKTE, mark_without_objects
+
+    a = Finding("P7704", FEHLT, "Q1", "europeana", "1", "agent/1", [], action="new")
+    b = Finding("P7704", FEHLT, "Q2", "europeana", "2", "agent/2", [], action="new")
+    c = Finding("P7704", IDENTISCH, "Q3", "europeana", "3", "agent/3", ["agent/3"])
+    assert mark_without_objects([a, b, c], {"1": 5, "2": 0, "3": 0}) == 1
+    assert (a.status, b.status, c.status) == (FEHLT, OHNE_OBJEKTE, IDENTISCH)
+    assert b.action == "new" and "0 verknüpfte Objekte" in b.note

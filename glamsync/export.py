@@ -310,7 +310,7 @@ def write_city_summary(s: dict, path: Path) -> None:
     if s.get("failed"):
         lines += ["", "**Nicht abrufbar (SPARQL-Fehler):** " + ", ".join(s["failed"])]
     if len(s.get("per_country", {})) > 1:
-        cols = ["fehlt_in_wikidata", "identisch", "formatfehler", "konflikt", "mehrdeutig", "kein_treffer"]
+        cols = ["fehlt_in_wikidata", "fehlt_ohne_objekte", "identisch", "formatfehler", "konflikt", "mehrdeutig", "kein_treffer"]
         lines += ["", "## Nach Land", "", "| Land | Städte | " + " | ".join(cols) + " |",
                   "|---|---:|" + "---:|" * len(cols)]
         for land, c in s["per_country"].items():

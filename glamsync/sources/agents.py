@@ -12,7 +12,7 @@ import logging
 from .. import config
 from ..http import CachedClient
 from ..models import SourceRecord
-from ..normalize import normalize_gnd, qid_from_uri
+from ..normalize import normalize_gnd, normalize_p7704, qid_from_uri
 from .europeana import _require_key
 
 log = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ def to_record(a: dict) -> SourceRecord:
     return SourceRecord(
         source="europeana", source_id=a["id"], label=a["label"],
         url=f"https://www.europeana.eu/de/collections/person/{a['id']}",
-        qids=a["qids"], ids={"P7704": [f"agent/base/{a['id']}"], "P227": a["gnd"]},
+        qids=a["qids"], ids={"P7704": [normalize_p7704(f"agent/{a['id']}")], "P227": a["gnd"]},
     )
 
 

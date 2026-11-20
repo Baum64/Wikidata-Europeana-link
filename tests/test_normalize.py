@@ -71,15 +71,18 @@ def test_isni_check_flags_spaces():
         ("http://data.europeana.eu/organization/4373", "organisation/4373"),
         ("https://data.europeana.eu/organisation/4373", "organisation/4373"),
         ("https://api.europeana.eu/entity/organization/4373.json", "organisation/4373"),
-        ("agent/base/146741", "agent/base/146741"),
-        ("http://data.europeana.eu/agent/base/146741", "agent/base/146741"),
-        ("http://data.europeana.eu/agent/146741", "agent/base/146741"),
-        ("place/base/216254", "place/base/216254"),
-        ("concept/base/48", "concept/base/48"),
+        ("agent/base/146741", "agent/146741"),
+        ("http://data.europeana.eu/agent/base/146741", "agent/146741"),
+        ("http://data.europeana.eu/agent/146741", "agent/146741"),
+        ("place/base/216254", "place/216254"),
+        ("place/216254", "place/216254"),
+        ("https://www.europeana.eu/de/collections/person/61829-anders-zorn", "agent/61829"),
+        ("https://www.europeana.eu/de/collections/place/1358-ludwigsburg", "place/1358"),
+        ("concept/base/48", "concept/48"),
         ("https://www.europeana.eu/en/collections/organisation/5053-saints-archangels-church", "organisation/5053"),
         ("https://www.europeana.eu/en/collections/organisation/251-x?page=1&reusability=open", "organisation/251"),
-        ("collections/person/73049", "agent/base/73049"),
-        ("https://www.europeana.eu/de/collections/topic/48-photography", "concept/base/48"),
+        ("collections/person/73049", "agent/73049"),
+        ("https://www.europeana.eu/de/collections/topic/48-photography", "concept/48"),
         ("https://www.europeana.eu/de/item/15508/DG1934_497", None),
         ("person/marco-di-meco", None),
         ("item/2048128/618580", None),
@@ -187,3 +190,10 @@ def test_normalize_viaf(raw, expected):
 def test_normalize_mure(raw, expected):
     from glamsync.normalize import normalize_mure
     assert normalize_mure(raw) == expected
+
+
+def test_p7704_old_base_form_stays_valid():
+    # neue Werte ohne 'base', vorhandene <typ>/base/<n> gelten weiter als gültig (keine Korrektur)
+    for v in ("agent/base/61829", "agent/61829", "place/base/1358", "place/1358"):
+        c = check("P7704", v)
+        assert c.format_ok and c.normalized == v.replace("base/", "")

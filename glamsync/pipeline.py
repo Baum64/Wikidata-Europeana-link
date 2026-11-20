@@ -348,12 +348,13 @@ def normalize_value(prop: str, v: str) -> str:
     return (normalize(prop, v) if prop in PROPERTIES else v.strip().upper()) or v
 
 
-# --- Städte: Europeana-Orte ↔ Wikidata (P7704 place/base/<n>) ----------------------
+# --- Städte: Europeana-Orte ↔ Wikidata (P7704 place/<n>) ----------------------
 BIG_CITY = "Q1549591"  # Großstadt
 
 
 def cities_compare(client: CachedClient, country: str = "europa", city_class: str = BIG_CITY,
                    subclasses: bool = True, min_population: int = 100_000) -> dict:
+    from . import persons as P
     from .match import classify_city
     from .sources import places
 
@@ -399,6 +400,8 @@ def cities_compare(client: CachedClient, country: str = "europa", city_class: st
         f = classify_city(q, items[q], [recs[n] for n in resolved[q]], lookups, counts)
         findings.append(f)
     resolve_collisions(findings)
+    # Orte ohne Objekte in Europeana: eigene QS-Datei (wie bei den Personen)
+    log.info("Neu-Vorschläge ohne Objekte in Europeana: %d", P.mark_without_objects(findings, counts))
     # Formatprüfung bereits vorhandener P7704-Werte der Städte (Korrektur/Löschung)
     already = {(f.qid, f.prop, f.old_value) for f in findings if f.old_value}
     wd_findings = [f for f in wikidata_format_findings(items, set(), already) if f.prop == "P7704"]
@@ -407,8 +410,11 @@ def cities_compare(client: CachedClient, country: str = "europa", city_class: st
     tag = f"staedte_{tag_country}"
     out = config.OUT_DIR
     files = []
+    regular = [f for f in findings + wd_findings if f.status != P.OHNE_OBJEKTE]
     for action in ("new", "fix", "delete"):
-        files += export.write_qs(findings + wd_findings, "P7704", action, date, tag=tag)
+        files += export.write_qs(regular, "P7704", action, date, tag=tag)
+    files += export.write_qs([f for f in findings if f.status == P.OHNE_OBJEKTE], "P7704", "new", date,
+                             tag=tag, label="ohne_objekte")
 
     rows = []
     for f in findings + wd_findings:
@@ -443,7 +449,7 @@ def cities_compare(client: CachedClient, country: str = "europa", city_class: st
     return summary
 
 
-# --- Personen: Europeana-Agents ↔ Wikidata (P7704 agent/base/<n>, P227) -------------
+# --- Personen: Europeana-Agents ↔ Wikidata (P7704 agent/<n>, P227) -------------
 def persons_compare(client: CachedClient, check_gnd: bool = True) -> dict:
     from collections import defaultdict
 
@@ -536,6 +542,16 @@ SELECT ?item WHERE { ?item wdt:P7704 ?v . FILTER(STRSTARTS(?v, "{prefix}")) FILT
             matched[q] = rec
     resolve_collisions(findings)
 
+    # 7b. Objektzahl je Neu-Vorschlag: Agents ohne Objekte kommen in eine eigene QS-Datei
+    todo_counts = [f.source_id for f in findings
+                   if f.prop == "P7704" and f.status == FEHLT and f.action == "new" and f.source_id not in counts]
+    log.info("Europeana: Objektzahl für %d neue Agents", len(todo_counts))
+    for i, sid in enumerate(todo_counts, 1):
+        counts[sid] = places.record_count(agent_src.fetch_agent(client, sid)) or 0
+        if i % 2000 == 0:
+            log.info("Objektzahl: %d/%d", i, len(todo_counts))
+    log.info("Neu-Vorschläge ohne Objekte in Europeana: %d", P.mark_without_objects(findings, counts))
+
     # 8. P227 aus Europeana, geprüft über lobid
     gnd_problems: dict[str, str | None] = {}
     todo = {r.ids["P227"][0] for q, r in matched.items()
@@ -573,7 +589,10 @@ SELECT ?item WHERE { ?item wdt:P7704 ?v . FILTER(STRSTARTS(?v, "{prefix}")) FILT
     # 10. Ausgabe
     out = config.OUT_DIR
     files = []
-    files += export.write_qs(findings, "P7704", "new", date, tag="personen")
+    files += export.write_qs([f for f in findings if f.status != P.OHNE_OBJEKTE], "P7704", "new", date,
+                             tag="personen")
+    files += export.write_qs([f for f in findings if f.status == P.OHNE_OBJEKTE], "P7704", "new", date,
+                             tag="personen", label="ohne_objekte")
     files += export.write_qs(gnd_findings, "P227", "new", date, tag="personen")
     files += export.write_qs(cleanup_findings, "P7704", "fix", date, tag="personen")
     files += export.write_qs(cleanup_findings, "P7704", "delete", date, tag="personen", label="loeschen_pruefen")

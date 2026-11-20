@@ -3,7 +3,7 @@
 Schlüssel: sameAs → QID (Europeana-Agents sind fast vollständig mit Wikidata verknüpft).
 Die GND aus dem sameAs dient als Gegenprobe und als Quelle für fehlende P227.
 
-P7704 (agent/base/<n>) je Wikidata-Item:
+P7704 (agent/<n>, früher agent/base/<n>) je Wikidata-Item:
   identisch          Wikidata führt einen der Europeana-Agents dieses Items
   konflikt           Wikidata führt einen anderen Agent (P7704 ist einwertig) – nur Bericht
   kein_treffer       QID existiert nicht (mehr)
@@ -21,9 +21,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .models import FEHLT, IDENTISCH, KEIN_TREFFER, KONFLIKT, MEHRDEUTIG, Finding, SourceRecord, WikidataItem
+from .normalize import normalize_p7704
 
 KEIN_MENSCH = "kein_mensch"
 GND_PROBLEM = "gnd_problem"
+OHNE_OBJEKTE = "fehlt_ohne_objekte"  # Agent/Ort ohne verknüpfte Objekte in Europeana – eigene QS-Datei
 HUMAN = "Q5"
 
 
@@ -53,7 +55,7 @@ def classify_person(
 ) -> tuple[Finding, SourceRecord | None]:
     """P7704-Befund für ein Wikidata-Item und die Europeana-Agents mit sameAs auf dieses Item.
 
-    `present` = vorhandene agent/base/…-Werte des Items (ohne deprecated).
+    `present` = vorhandene agent-Werte des Items, normalisiert (ohne deprecated).
     Rückgabe: (Befund, zugeordneter Agent oder None).
     """
     counts = counts or {}
@@ -134,9 +136,22 @@ def person_gnd(
     return f
 
 
+def mark_without_objects(findings: list[Finding], counts: dict[str, int]) -> int:
+    """Neu-Vorschläge für Agents/Orte ohne Objekte in Europeana kennzeichnen (Status OHNE_OBJEKTE).
+
+    Die Aktion bleibt 'new'; die Ausgabe schreibt sie in eine eigene QS-Datei.
+    """
+    n = 0
+    for f in findings:
+        if f.prop == "P7704" and f.status == FEHLT and f.action == "new" and not counts.get(f.source_id):
+            f.status, n = OHNE_OBJEKTE, n + 1
+            f.note = _join(f.note, "Europeana: 0 verknüpfte Objekte")
+    return n
+
+
 @dataclass
 class AgentCleanup:
-    """Wikidata-Wert agent/base/<n>, den Europeana nicht (mehr) unter dieser Nummer führt."""
+    """Wikidata-Wert agent/<n> bzw. agent/base/<n>, den Europeana nicht (mehr) unter dieser Nummer führt."""
 
     qid: str
     value: str
@@ -166,7 +181,7 @@ def agent_cleanup(qid: str, value: str, resolved: dict | None, has_refs: bool, h
     new_num = (resolved.get("id") or "").rsplit("/", 1)[-1]
     if not new_num or new_num == num:
         return None  # existiert, fehlte nur in der Suchliste
-    new_value = f"agent/base/{new_num}"
+    new_value = normalize_p7704(f"agent/{new_num}")
     c = AgentCleanup(qid, value, "zusammengefuehrt", new_value, note=f"Europeana leitet um auf {new_value}")
     others = value_owner.get(new_value, set()) - {qid}
     if others:

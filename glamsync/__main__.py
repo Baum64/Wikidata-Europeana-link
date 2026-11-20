@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> None:
     r.add_argument("--types", help="Kandidaten-Pool (Standard: isil = museum,library,archive; mure = museum)")
     r.add_argument("--subclasses", action=argparse.BooleanOptionalAction, default=True, help=SUB_HELP)
 
-    st = sub.add_parser("cities", help="Städte: Europeana-Orte ↔ Wikidata (P7704 place/base/…), über sameAs")
+    st = sub.add_parser("cities", help="Städte: Europeana-Orte ↔ Wikidata (P7704 place/…), über sameAs")
     st.add_argument("--country", default="europa",
                     help="europa (Standard: alle souveränen Staaten Europas), ein Land (Q183) oder Liste (Q183,Q40)")
     st.add_argument("--class", dest="city_class", default=pipeline.BIG_CITY,
@@ -55,7 +55,7 @@ def main(argv: list[str] | None = None) -> None:
                     help="zusätzlich jede Stadt (Q515) ab dieser Einwohnerzahl (Standard: 100000)")
     st.add_argument("--subclasses", action=argparse.BooleanOptionalAction, default=True, help=SUB_HELP)
 
-    pe = sub.add_parser("persons", help="Personen: Europeana-Agents ↔ Wikidata (P7704 agent/base/…, P227)")
+    pe = sub.add_parser("persons", help="Personen: Europeana-Agents ↔ Wikidata (P7704 agent/…, P227)")
     pe.add_argument("--no-gnd-check", action="store_true",
                     help="GND nicht über lobid prüfen (dann keine P227-Vorschläge)")
 

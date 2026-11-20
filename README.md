@@ -9,7 +9,7 @@ Das Tool schreibt **niemals selbst** in Wikidata.
 
 | Property | Name | Format in Wikidata |
 |---|---|---|
-| P7704 | Europeana entity | `organisation/<n>` (britische Schreibweise), `agent/base/<n>`, `place/base/<n>`, `concept/base/<n>` |
+| P7704 | Europeana entity | `organisation/<n>` (britische Schreibweise), `agent/<n>`, `place/<n>`, `concept/<n>`. Neue Werte ohne `base` (seit 20.11.2026), vorhandene `…/base/<n>` bleiben gültig |
 | P791 | ISIL | z. B. `DE-MUS-123456`, `DE-1` (Hauptschlüssel) |
 | P227 | GND | z. B. `2022341-9` (Zweitschlüssel) |
 | P214 | VIAF | nur übernommen, wenn die Quelle genau einen Wert hat |
@@ -202,19 +202,28 @@ python -m glamsync cities --country Q183,Q40,Q39 --min-population 50000
 - **Zuordnung** nur über sameAs: Jede Stadt wird einzeln über
   `GET /entity/resolve?uri=http://www.wikidata.org/entity/<QID>` aufgelöst. Es gibt keinen
   Namensabgleich.
-- **Wertform:** `place/base/<n>`, so wie die bestehenden Orts-Werte in Wikidata und der
-  Format-Constraint. `place/<n>` löst ebenfalls auf.
+- **Wertform:** `place/<n>` (seit 20.11.2026). Das ist die aktuelle Europeana-ID
+  (`http://data.europeana.eu/place/<n>`, Webseite `…/collections/place/<n>`). `place/base/<n>`
+  leitet Europeana nur noch per 301 um, und in die Webseiten-URL kopiert führt es zu einem 404.
+  Vorhandene `place/base/<n>`-Werte in Wikidata gelten weiter als gültig (`identisch`, keine
+  Korrektur). Der Format-Constraint von P7704 verlangt noch `/base/`, Diskussionsentwurf:
+  [docs/P7704_place_ohne_base.md](docs/P7704_place_ohne_base.md). Schalter:
+  `normalize.WITH_BASE` (gilt für alle Typen außer Organisationen, auch für Personen).
 - **Europeana-Dubletten:** Viele Städte gibt es in Europeana zwei- oder dreimal mit
   identischen Daten. Weil P7704 einwertig ist, gilt:
   1. Führt Wikidata bereits einen der Orte, zählt dieser.
   2. Sonst wird der Ort mit eindeutig den meisten verknüpften Objekten
      (`isAggregatedBy.recordCount`) vorgeschlagen.
   3. Bei Gleichstand ist der Fall `mehrdeutig` und steht nur im Bericht.
+- **Orte ohne Objekte:** Hat der vorgeschlagene Ort in Europeana 0 verknüpfte Objekte
+  (`isAggregatedBy.recordCount`), bekommt er wie bei den Personen den Status
+  `fehlt_ohne_objekte` und landet in einer eigenen QS-Datei (zunächst nicht einspielen).
 - **Ausgabe:**
   - `out/staedte_<land|europa>_<datum>.csv` (Bericht mit Länderspalte) und
     `out/staedte_<land|europa>_<datum>.md` (Zusammenfassung mit Tabelle je Land und Dublettenliste);
   - `out/qs_P7704_staedte_<land>_{neu,korrektur,loeschen}_<datum>_partNN.txt`,
-    Fundstelle S248 Europeana (Q234110) + S813.
+    Fundstelle S248 Europeana (Q234110) + S813;
+  - `out/qs_P7704_staedte_<land>_ohne_objekte_<datum>_partNN.txt` – Orte ohne Objekte.
 
 **Ergebnis 16.11.2026 (Europa, 51 Länder, 802 Städte):**
 
@@ -245,7 +254,8 @@ python -m glamsync persons --no-gnd-check  # ohne lobid-Prüfung (dann keine P22
 **Ziel.** Europeana führt rund 170.000 Agents (überwiegend Personen) unter
 `http://data.europeana.eu/agent/<n>`. Für Personen in Wikidata werden zwei Werte ergänzt:
 
-- **P7704** `agent/base/<n>`, die Verknüpfung zu Europeana;
+- **P7704** `agent/<n>` (aktuelle Europeana-Form, Webseite `…/collections/person/<n>`; vorhandene
+  `agent/base/<n>` gelten weiter als gültig), die Verknüpfung zu Europeana;
 - **P227 GND**, wenn sie in Wikidata fehlt und Europeana sie nennt.
 
 **Datenlage (geprüft 18.11.2026).**
@@ -275,6 +285,7 @@ python -m glamsync persons --no-gnd-check  # ohne lobid-Prüfung (dann keine P22
 | `mehrdeutig` | Dublette ohne Favorit, Agent schon an anderem Item, GND zeigt auf anderes Item, sameAs mit mehreren QIDs | Bericht |
 | `kein_mensch` | Item ist kein Mensch (Organisation, Gruppe, fiktive Figur …) | Bericht |
 | `kein_treffer` | QID existiert nicht | Bericht |
+| `fehlt_ohne_objekte` | wie `fehlt_in_wikidata`, aber der Agent hat in Europeana 0 Objekte (`isAggregatedBy.recordCount`) | eigene QS-Datei, zunächst nicht einspielen |
 
 Europeana-Dubletten (mehrere Agents → dieselbe QID) werden wie bei den Städten nach den
 meisten verknüpften Objekten (`isAggregatedBy.recordCount`) entschieden, bei Gleichstand
@@ -289,7 +300,7 @@ nur berichtet.
   umgelenkt wurde. Ist die GND nicht prüfbar, keine Person oder umgelenkt, erhält der Fall
   den Status `gnd_problem` und steht nur im Bericht.
 
-**Bereinigung (Rückrichtung).** Wikidata-Werte `agent/base/<n>`, deren Nummer in der
+**Bereinigung (Rückrichtung).** Wikidata-Werte `agent/<n>` bzw. `agent/base/<n>`, deren Nummer in der
 Europeana-Liste fehlt, werden einzeln abgefragt:
 
 - **404** → `loeschen_pruefen` (Agent existiert nicht mehr);
@@ -300,7 +311,9 @@ In beiden Fällen gilt: nur ohne Quellen/Qualifier, sonst nur Bericht.
 
 **Ausgabe.**
 
-- `out/qs_P7704_personen_neu_<datum>_partNN.txt`
+- `out/qs_P7704_personen_neu_<datum>_partNN.txt` – nur Agents mit mindestens einem Objekt in Europeana
+- `out/qs_P7704_personen_ohne_objekte_<datum>_partNN.txt` – Agents ohne Objekte (`fehlt_ohne_objekte`);
+  formal korrekt, die Europeana-Seite zeigt aber keine Treffer – **zunächst nicht einspielen**
 - `out/qs_P227_personen_neu_<datum>_partNN.txt`
 - `out/qs_P7704_personen_korrektur_<datum>_partNN.txt` und `…_personen_loeschen_pruefen_…`
 - `out/personen_<datum>.csv` (nur Abweichungen) und `out/personen_<datum>.md` (Zusammenfassung)
@@ -325,7 +338,8 @@ Alle Vorschläge haben die Fundstelle S248 Europeana (Q234110) + S813.
 | Status P7704 | Anzahl |
 |---|---:|
 | identisch | 156.986 |
-| fehlt_in_wikidata → QS | 12.067 |
+| fehlt_in_wikidata → QS `…_personen_neu_…` | 7.414 |
+| fehlt_ohne_objekte → QS `…_personen_ohne_objekte_…` (zunächst nicht einspielen) | 4.653 |
 | kein_mensch | 463 |
 | konflikt | 366 |
 | mehrdeutig | 105 (85 sameAs mit mehreren QIDs, 18 Agent schon an anderem Item, 2 Dubletten) |
@@ -336,6 +350,8 @@ Alle Vorschläge haben die Fundstelle S248 Europeana (Q234110) + S813.
 - **Bereinigung:** 1.218 Wikidata-Werte zeigen auf Agents, die Europeana nicht mehr kennt
   (404). 1.215 davon haben Quellen/Qualifier (nur Bericht), 3 stehen in
   `…_personen_loeschen_pruefen_…`. Zusammenführungen (Weiterleitungen) gab es keine.
+- **Link-Hinweis:** Der bevorzugte Formatter von P7704 (`https://data.europeana.eu/$1`) funktioniert.
+  Die zusätzlichen Formatter `…/en/$1` und `…/fr/$1` liefern für jede ID 404 (Stand 19.11.2026).
 - In 194 Vorschlägen hat das Wikidata-Item kein deutsches/englisches Label; die Zuordnung
   beruht wie alle anderen auf sameAs.
 

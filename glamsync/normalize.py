@@ -131,7 +131,12 @@ def normalize_viaf(value: str | None) -> str | None:
 # ---------------------------------------------------------------------------
 # 'organization/<n>' (amerikanisch) löst bei Europeana ebenso auf wie 'organisation/<n>' und gilt
 # daher als korrekt – dafür wird keine Korrektur vorgeschlagen.
-_P7704_OK = re.compile(r"^(?:organi[sz]ation/\d+|(?:agent|place|concept|timespan)/base/\d+)$")
+# Agents, Orte, Begriffe, Zeiträume: Europeana führt sie inzwischen als <typ>/<n>
+# (API-ID, data.europeana.eu/<typ>/<n>); <typ>/base/<n> wird nur noch per 301 umgeleitet.
+# Neue Werte daher ohne 'base'; vorhandene <typ>/base/<n>-Werte gelten weiter als gültig
+# (keine Massenkorrektur ohne Wikidata-Konsens, s. docs/P7704_place_ohne_base.md).
+WITH_BASE = False
+_P7704_OK = re.compile(r"^(?:organi[sz]ation/\d+|(?:agent|place|concept|timespan)/(?:base/)?\d+)$")
 # Ab dieser Länge gilt eine Organisations-ID als alte CRM-ID (z. B. 1482250000004502115)
 LEGACY_ORG_ID_MIN_LEN = 13
 
@@ -141,7 +146,8 @@ def normalize_p7704(value: str | None) -> str | None:
 
     'organization/123'                              → 'organisation/123'
     'http://data.europeana.eu/organization/123'     → 'organisation/123'
-    'http://data.europeana.eu/agent/base/1' bzw. 'agent/1' → 'agent/base/1'
+    'http://data.europeana.eu/agent/base/1' bzw. 'agent/1' → 'agent/1' (siehe WITH_BASE)
+    'place/base/1' bzw. 'place/1'                   → 'place/1'
     Objekt-IDs ('item/…', '90402/…' = P727), reine Zahlen u. Ä. → None
     """
     if not value:
@@ -160,7 +166,8 @@ def normalize_p7704(value: str | None) -> str | None:
         return f"organisation/{m.group(1)}"
     m = re.fullmatch(r"(?i)(agent|place|concept|timespan)/(?:base/)?(\d+)", v)
     if m:
-        return f"{m.group(1).lower()}/base/{m.group(2)}"
+        kind = m.group(1).lower()
+        return f"{kind}/base/{m.group(2)}" if WITH_BASE else f"{kind}/{m.group(2)}"
     return None
 
 

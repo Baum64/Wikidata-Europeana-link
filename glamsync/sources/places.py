@@ -54,8 +54,8 @@ def place_record(num: str, place: dict | None) -> SourceRecord:
         label=pl.get("de") or pl.get("en") or next(iter(pl.values()), ""),
         url=f"https://www.europeana.eu/de/collections/place/{num}",
         qids=sorted({q for q in (qid_from_uri(s) for s in same if "wikidata.org" in s) if q}),
-        # Wikidata führt Orte als place/base/<n> (beide Formen lösen auf)
-        ids={"P7704": [f"place/base/{num}"]},
+        # aktuelle Europeana-Form place/<n> (place/base/<n> wird nur umgeleitet), s. normalize.WITH_BASE
+        ids={"P7704": [normalize_p7704(f"place/{num}")]},
     )
 
 
