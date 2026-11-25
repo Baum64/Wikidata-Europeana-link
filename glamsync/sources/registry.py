@@ -21,6 +21,9 @@ log = logging.getLogger(__name__)
 
 ISIL_API = "https://isil.staatsbibliothek-berlin.de/api/org.jsonld"
 MURE_API = "https://museen-in-oesterreich.at/wp-json/wp/v2/museum"
+# Schweizer ISIL-Verzeichnis (Nationalbibliothek, opendata.swiss, täglich aktualisiert)
+ISIL_CH_CSV = "https://www.isil.nb.admin.ch/opendata/latest.csv"
+ISIL_CH_DATASET = "https://opendata.swiss/de/dataset/schweizer-isil-verzeichnis"
 
 
 @dataclass
@@ -94,6 +97,32 @@ def fetch_isil(client: CachedClient, prefix: str) -> list[RegistryRecord]:
             break
         page += 1
     log.info("ISIL %s: %d Datensätze", prefix, len(records))
+    return records
+
+
+def fetch_isil_ch(client: CachedClient, include_inactive: bool = False) -> list[RegistryRecord]:
+    """Aktive Einträge des Schweizer ISIL-Verzeichnisses (CSV, ~2.500 Zeilen, davon ~1.900 aktiv).
+
+    Die Berliner ISIL-Datenbank führt nur wenige CH-ISIL; die Schweizer Liste ist vollständig und
+    enthält Namen in allen Landessprachen, Ort und Website (keine Koordinaten)."""
+    import csv
+    import io
+
+    resp = client.session.get(ISIL_CH_CSV, timeout=120)
+    resp.raise_for_status()
+    rows = csv.DictReader(io.StringIO(resp.content.decode("utf-8-sig")))
+    records = []
+    for r in rows:
+        isil = normalize_isil(r.get("ISIL"))
+        if not isil or (r.get("Status") != "aktiv" and not include_inactive):
+            continue
+        names = [r.get(k, "").strip() for k in ("Name-DE", "Name-FR", "Name-IT", "Name-RM", "Name-EN")]
+        main = (r.get("Name-Original") or "").strip() or next((n for n in names if n), "")
+        records.append(RegistryRecord(
+            source="isil_ch", prop="P791", value=isil, name=main,
+            alt_names=sorted({n for n in names if n and n != main}), city=(r.get("Ortschaft") or "").strip(),
+            country="CH", websites=[w for w in [(r.get("Webseite") or "").strip()] if w], url=ISIL_CH_DATASET))
+    log.info("ISIL CH (Nationalbibliothek): %d %s", len(records), "Einträge" if include_inactive else "aktive Einträge")
     return records
 
 

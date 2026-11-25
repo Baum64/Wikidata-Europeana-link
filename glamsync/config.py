@@ -46,6 +46,28 @@ CONTACT: str = os.environ.get("GLAMSYNC_CONTACT", "").strip() or REPOSITORY
 # Lebensdauer des Wikidata-Caches (HTTP-Cache und data/wikidata_*.json) in Stunden
 WIKIDATA_CACHE_HOURS: float = float(os.environ.get("GLAMSYNC_WIKIDATA_CACHE_HOURS", "12"))
 
+def gnd_dump_path() -> Path | None:
+    """GND-Dump Körperschaften (GND_DUMP_PATH, relativ zum Projektordner); None, wenn nicht gesetzt."""
+    raw = os.environ.get("GND_DUMP_PATH", "").strip()
+    if not raw:
+        return None
+    p = Path(raw).expanduser()
+    return p if p.is_absolute() else PROJECT_ROOT / p
+
+
+def gnd_redirects_path() -> Path | None:
+    """GND-Umlenkungs-/Löschdatei (GND_REDIRECTS_PATH); sonst die neueste neben dem GND-Dump; None, wenn keine."""
+    raw = os.environ.get("GND_REDIRECTS_PATH", "").strip()
+    if raw:
+        p = Path(raw).expanduser()
+        return p if p.is_absolute() else PROJECT_ROOT / p
+    dump = gnd_dump_path()
+    hits = sorted(dump.parent.glob("authorities-gnd_umlenk_loesch*.jsonld.gz")) if dump else []
+    return hits[-1] if hits else None
+
+
+GND_TABLE = DATA_DIR / "gnd_einrichtungen.sqlite"  # aus dem Dump erzeugt, siehe sources/gnd.py
+
 VERSION = "0.1.0"
 
 
@@ -56,5 +78,6 @@ def user_agent() -> str:
 
 # Endpunkte
 WIKIDATA_SPARQL = "https://query.wikidata.org/sparql"
+WIKIDATA_API = "https://www.wikidata.org/w/api.php"
 EUROPEANA_ENTITY = "https://api.europeana.eu/entity"
 DDB_API = "https://api.deutsche-digitale-bibliothek.de/2"

@@ -162,3 +162,32 @@ def test_registry_qs(tmp_path):
     assert path.name == "qs_P7917_kandidaten_Q40_2026-11-16_part01.txt"
     assert path.read_text().strip() == (
         'Q1|P7917|"M10072"|S854|"https://museen-in-oesterreich.at/museum/m10072/"|S813|+2026-11-16T00:00:00Z/11')
+
+
+def test_http_wait_budget(monkeypatch):
+    import pytest
+    from glamsync import http
+    slept = []
+    monkeypatch.setattr(http.time, "sleep", slept.append)
+    assert http._wait(0, 30, "x") == 30 and slept == [30]
+    with pytest.raises(http.SkippedRequest):
+        http._wait(30, 16, "x")  # 46 s > MAX_WAIT (40)
+    with pytest.raises(http.SkippedRequest):
+        http._wait(0, 120, "x")  # Retry-After 120 s wird gar nicht erst abgewartet
+    assert slept == [30]
+
+
+def test_mark_sure_by_place_and_label():
+    from glamsync.registry import KEIN_TREFFER, SICHER, Extras, Pool, RegistryMatch, mark_sure
+    from glamsync.models import WikidataItem
+    from glamsync.sources.registry import RegistryRecord
+
+    items = {"Q1": WikidataItem("Q1", {"de": "Stadtbibliothek Biel", "fr": "Bibliothèque de la Ville de Bienne"}),
+             "Q2": WikidataItem("Q2", {"de": "Stadtarchiv Biel"})}
+    pool = Pool(items, {q: Extras() for q in items})
+    locs = {"Q1": [("Q5", "Biel/Bienne"), ("Q5", "Bienne")], "Q2": [("Q5", "Bienne")]}
+    rec = lambda v, name, alt=(): RegistryRecord("isil_ch", "P791", v, name, list(alt), city="Bienne")  # noqa: E731
+    ms = [RegistryMatch(rec("CH-1", "Bibliothèque de la Ville de Bienne", ["Stadtbibliothek Biel"]), KEIN_TREFFER),
+          RegistryMatch(rec("CH-2", "Musikschule Biel"), KEIN_TREFFER)]
+    assert mark_sure(ms, pool, locs, {}, "P791") == 1
+    assert (ms[0].status, ms[0].qids, ms[1].status) == (SICHER, ["Q1"], KEIN_TREFFER)

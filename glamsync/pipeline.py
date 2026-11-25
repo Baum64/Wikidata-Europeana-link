@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 from collections import Counter
@@ -9,7 +10,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from . import config, export
-from .http import CachedClient
+from .http import CachedClient, SkippedRequest
 from .match import (
     RecordMatch,
     build_lookups,
@@ -291,7 +292,8 @@ def registry_compare(client: CachedClient, source: str, country: str, types: lis
         prefix = ISIL_PREFIX.get(country)
         if not prefix:
             raise SystemExit(f"Kein ISIL-Präfix für {country} hinterlegt ({ISIL_PREFIX}).")
-        records = reg_src.fetch_isil(client, prefix)
+        # Schweiz: vollständiges Verzeichnis der Nationalbibliothek statt der wenigen CH-ISIL in Berlin
+        records = reg_src.fetch_isil_ch(client) if country == "Q39" else reg_src.fetch_isil(client, prefix)
         value_prefix = prefix + "-"
     else:
         if country != "Q40":
@@ -318,8 +320,14 @@ def registry_compare(client: CachedClient, source: str, country: str, types: lis
 
     # 3. Abgleich
     matches = reg.classify_registry(records, pool, value_index, item_values)
-    registry_keys = {compare_key(prop, r.value) for r in records}
-    cleanup = reg.registry_cleanup(statements, registry_keys, prop, value_prefix)
+    sure = reg.mark_sure(matches, pool, wd.locations(pool.items), item_values, prop)
+    log.info("Register: %d sichere Kandidaten (Ort gleich, Label sehr ähnlich)", sure)
+    # Löschvorschläge nur gegen ein vollständiges Register: CH inkl. inaktiver ISIL (eine ISIL bleibt
+    # gültig, auch wenn die Einrichtung geschlossen ist); AT-ISIL führt Berlin nur vereinzelt → nur Bericht
+    known = reg_src.fetch_isil_ch(client, include_inactive=True) if source == "isil" and country == "Q39" else records
+    registry_keys = {compare_key(prop, r.value) for r in known}
+    complete = not (source == "isil" and country == "Q40")
+    cleanup = reg.registry_cleanup(statements, registry_keys, prop, value_prefix, complete)
     # Labels für Items außerhalb des Pools nachladen (für Bericht)
     outside = {q for m in matches for q in m.qids} | {c.qid for c in cleanup}
     items.update(wd.fetch_items(outside - set(items)))
@@ -331,6 +339,7 @@ def registry_compare(client: CachedClient, source: str, country: str, types: lis
     export.write_registry_report(matches, items, out / f"{stem}.csv")
     export.write_registry_cleanup(cleanup, items, prop, out / f"{stem}_bereinigung.csv")
     qs_files = export.write_registry_qs(matches, prop, source, country, date)
+    qs_files += export.write_registry_sure_qs(matches, prop, source, country, date)
     qs_files += export.write_registry_delete_qs(cleanup, prop, country, date)
     counts = Counter(m.status for m in matches)
     summary = {
@@ -450,7 +459,7 @@ def cities_compare(client: CachedClient, country: str = "europa", city_class: st
 
 
 # --- Personen: Europeana-Agents ↔ Wikidata (P7704 agent/<n>, P227) -------------
-def persons_compare(client: CachedClient, check_gnd: bool = True) -> dict:
+def persons_compare(client: CachedClient, gnd_search: bool = False) -> dict:
     from collections import defaultdict
 
     from . import persons as P
@@ -478,6 +487,13 @@ SELECT ?item ?v WHERE {
         present[q].add(v)
         value_owner[v].add(q)
     log.info("Wikidata: %d agent-Werte an %d Items", len(scan), len(present))
+    # veraltete Werte (wenige): blockieren denselben Neu-Vorschlag am Item
+    deprecated: dict[str, set[str]] = defaultdict(set)
+    for r in wd.query("""
+SELECT ?item ?v WHERE {
+  ?item p:P7704 ?st . ?st ps:P7704 ?v ; wikibase:rank wikibase:DeprecatedRank . FILTER(STRSTARTS(?v, "agent/"))
+}"""):
+        deprecated[r["item"].rsplit("/", 1)[-1]].add(normalize("P7704", r["v"]) or r["v"])
 
     # 3. Gruppierung nach QID (sameAs); Agents mit mehreren QIDs nur Bericht
     groups: dict[str, list] = defaultdict(list)
@@ -503,11 +519,14 @@ SELECT ?item ?v WHERE {
                                      r.source_id, P.agent_value(r), [],
                                      note=f"ohne QID; GND trifft {', '.join(sorted(hits)) or 'nichts'}"))
 
-    # 4. Detaildaten: Items ohne agent-Wert und – für P227 – zugeordnete Items ohne GND
+    # 4. Detaildaten: Items ohne agent-Wert und – nur mit gnd_search – zugeordnete Items ohne GND
+    #    (die P227-Suche ist teuer und hat zuletzt keine Vorschläge ergeben → standardmäßig aus)
     gap = {q for q in groups if not present.get(q)}
-    no_gnd = {r["item"].rsplit("/", 1)[-1] for r in wd.agent_query("""
+    gnd_cands: set[str] = set()
+    if gnd_search:
+        no_gnd = {r["item"].rsplit("/", 1)[-1] for r in wd.agent_query("""
 SELECT ?item WHERE { ?item wdt:P7704 ?v . FILTER(STRSTARTS(?v, "{prefix}")) FILTER NOT EXISTS { ?item wdt:P227 ?g } }""")}
-    gnd_cands = {q for q in groups if q in no_gnd and any(r.ids["P227"] for r in groups[q])}
+        gnd_cands = {q for q in groups if q in no_gnd and any(r.ids["P227"] for r in groups[q])}
     items = wd.fetch_items(gap | gnd_cands)
     missing = {q for q, it in items.items() if not (it.labels or it.p31 or it.claims)}
     redirects = wd.resolve_redirects(missing) if missing else {}
@@ -541,6 +560,7 @@ SELECT ?item WHERE { ?item wdt:P7704 ?v . FILTER(STRSTARTS(?v, "{prefix}")) FILT
         if rec is not None and f.status in (IDENTISCH, FEHLT):
             matched[q] = rec
     resolve_collisions(findings)
+    log.info("Neu-Vorschläge mit veraltetem Wert in Wikidata: %d", P.mark_deprecated(findings, deprecated))
 
     # 7b. Objektzahl je Neu-Vorschlag: Agents ohne Objekte kommen in eine eigene QS-Datei
     todo_counts = [f.source_id for f in findings
@@ -552,17 +572,23 @@ SELECT ?item WHERE { ?item wdt:P7704 ?v . FILTER(STRSTARTS(?v, "{prefix}")) FILT
             log.info("Objektzahl: %d/%d", i, len(todo_counts))
     log.info("Neu-Vorschläge ohne Objekte in Europeana: %d", P.mark_without_objects(findings, counts))
 
-    # 8. P227 aus Europeana, geprüft über lobid
+    # 8. P227 aus Europeana, geprüft über lobid (nur mit gnd_search)
     gnd_problems: dict[str, str | None] = {}
-    todo = {r.ids["P227"][0] for q, r in matched.items()
-            if q in items and len(r.ids["P227"]) == 1 and not items[q].values("P227")
-            and "Q5" in items[q].p31 and not (gnd_owner.get(r.ids["P227"][0], set()) - {q})}
-    if check_gnd:
+    todo: set[str] = set()
+    gnd_findings: list[Finding] = []
+    if gnd_search:
+        todo = {r.ids["P227"][0] for q, r in matched.items()
+                if q in items and len(r.ids["P227"]) == 1 and not items[q].values("P227")
+                and "Q5" in items[q].p31 and not (gnd_owner.get(r.ids["P227"][0], set()) - {q})}
         log.info("lobid: prüfe %d GND", len(todo))
         for g in sorted(todo):
-            gnd_problems[g] = gnd_problem(g, gnd_info(client, g))
-    gnd_findings = [f for q, r in matched.items()
-                    if (f := P.person_gnd(q, r, items.get(q), gnd_owner, gnd_problems)) is not None]
+            try:
+                gnd_problems[g] = gnd_problem(g, gnd_info(client, g))
+            except SkippedRequest as exc:  # ungeprüfte GND → kein Vorschlag
+                log.warning("lobid %s: %s", g, exc)
+        # ungeprüfte (übersprungene) GND → person_gnd meldet „GND nicht geprüft“ (nur Bericht)
+        gnd_findings = [f for q, r in matched.items()
+                        if (f := P.person_gnd(q, r, items.get(q), gnd_owner, gnd_problems)) is not None]
 
     # 9. Rückwärts: Wikidata-Werte, deren Nummer Europeana nicht (mehr) führt
     orphan = [(q, v) for q, vs in present.items() for v in vs if v.rsplit("/", 1)[-1] not in by_num]
@@ -572,10 +598,15 @@ SELECT ?item WHERE { ?item wdt:P7704 ?v . FILTER(STRSTARTS(?v, "{prefix}")) FILT
     for q, v in orphan:
         st = next((s for s in orphan_items.get(q, WikidataItem(q)).values("P7704")
                    if normalize("P7704", s.value) == v), None)
+        if st is None:
+            # Wert steht nicht mehr am Item (z. B. schon gelöscht, Query-Service hinkt nach) –
+            # ohne Rohwert wäre ein Löschbefehl ohnehin wirkungslos
+            log.info("%s: %s nicht mehr in Wikidata – übersprungen", q, v)
+            continue
         c = P.agent_cleanup(q, v, agent_src.fetch_agent(client, v.rsplit("/", 1)[-1]),
                             bool(st and st.has_refs), bool(st and st.has_qualifiers), value_owner)
         if c:
-            c.old_raw = st.value if st else v  # Rohwert, wie er in Wikidata steht
+            c.old_raw = st.value  # Rohwert, wie er in Wikidata steht (ggf. mit base)
             cleanups.append(c)
     cleanup_findings = [
         Finding("P7704", FORMATFEHLER if c.kind == "zusammengefuehrt" else KONFLIKT, c.qid, "europeana",
@@ -621,3 +652,284 @@ SELECT ?item WHERE { ?item wdt:P7704 ?v . FILTER(STRSTARTS(?v, "{prefix}")) FILT
     }
     export.write_person_summary(summary, out / f"personen_{date}.md")
     return summary
+
+
+# --- GND-Dump: Körperschaften ↔ Wikidata (Kandidaten nach Name + Ort, Mix'n'match) --------
+GDR = "Q16957"  # Deutsche Demokratische Republik: Pool-Items mit P17 = DDR zählen bei Q183 mit
+
+
+def gnd_table(rebuild: bool = False) -> dict:
+    """Stellt die lokale GND-Tabelle bereit (baut sie bei Bedarf aus dem Dump)."""
+    from .sources import gnd as gnd_src
+
+    dump = config.gnd_dump_path()
+    if not dump or not dump.is_file():
+        raise SystemExit("GND-Dump nicht gefunden: GND_DUMP_PATH in .env setzen (siehe README, „GND-Dump Körperschaften“).")
+    return gnd_src.ensure_table(dump, config.GND_TABLE, rebuild)
+
+
+def gnd_redirects(rebuild: bool = False) -> tuple[dict, dict]:
+    """Umlenkungen/Löschungen (GND_REDIRECTS_PATH) → (alte GND → Redirect, Angaben zur Datei).
+
+    Fehlt die Datei, läuft der Abgleich ohne diese Prüfung weiter (mit Warnung und Hinweis im Bericht).
+    """
+    from .sources import gnd_redirects as rd
+
+    path = config.gnd_redirects_path()
+    if not path or not path.is_file():
+        log.warning("GND-Umlenkungsdatei nicht gefunden (GND_REDIRECTS_PATH, siehe README) – Prüfung entfällt.")
+        return {}, {}
+    stats = rd.ensure(path, config.GND_TABLE, rebuild)
+    return rd.load(config.GND_TABLE), {"file": path.name, "date": rd.file_date(path), "stats": stats}
+
+
+def gnd_compare(client: CachedClient, country: str = "Q183", types: list[str] | None = None,
+                subclasses: bool = True, limit: int | None = None, rebuild: bool = False,
+                include_historical: bool = False, propose_dates: bool = False) -> dict:
+    from . import gnd as g
+    from . import registry as reg
+    from .sources import gnd as gnd_src
+    from .sources.gnd_redirects import file_date, resolve
+
+    if country not in gnd_src.COUNTRY_GROUPS:
+        raise SystemExit(f"--country für die GND: {', '.join(gnd_src.COUNTRY_GROUPS)}")
+    types = types or list(TYPES)
+    wd = Wikidata(client)
+    date = export.today()
+
+    # 1. GND-Tabelle (aus dem Dump) und Umlenkungen laden, nach Land und Typ filtern
+    dump_stats = gnd_table(rebuild)
+    redirects, rd_info = gnd_redirects(rebuild)
+    meta = gnd_src.table_meta(config.GND_TABLE)
+    bodies = [b for b in gnd_src.load_table(config.GND_TABLE, gnd_src.COUNTRY_GROUPS[country])
+              if set(b.types) & set(types)]
+    total = len(bodies)
+    if limit:
+        bodies = bodies[:limit]
+    log.info("GND: %d Einrichtungen (%s)%s", len(bodies), country, f", Trockenlauf von {total}" if limit else "")
+
+    # 2. Wikidata: P227 (aktuelle und alte GND) und Kandidaten-Pool (Land × Typen, bei Q183 auch DDR)
+    values = {b.gnd for b in bodies} | {o for b in bodies for o in b.old_ids}
+    value_index = {v: set(qs) for v, qs in wd.lookup("P227", values).items()}
+    items: dict[str, WikidataItem] = {}
+    for c in [country] + ([GDR] if country == "Q183" else []):
+        for t in types:
+            name = f"wikidata_{c}_{t}{'_sub' if subclasses else ''}"
+            d = _load(name) or fetch_wikidata(client, c, [t], subclasses)[t]
+            items.update(_items_from_json(d))
+    extras = wd.fetch_extras(items)
+    pool = reg.Pool(dict(items), extras)
+    gp = g.GndPool(pool, wd.locations(items))
+    item_values = {q: [s.value for s in it.values("P227")] for q, it in items.items() if it.values("P227")}
+
+    # 3. Abgleich
+    matches = g.classify_gnd(bodies, gp, value_index, item_values, redirects, include_historical)
+    log.info("GND: %d sichere Kandidaten (Ort gleich, Label sehr ähnlich) → P227-QuickStatements",
+             g.mark_sure(matches, gp, item_values))
+    fmt_findings = g.p227_format_findings(items)
+
+    # 4. Zeitraum: Anmerkungen bei vorhandenen GND-IDs (P571/P576 live)
+    present = {q for m in matches if m.status == g.VORHANDEN for q in m.qids}
+    wd_years = wd.years(present) if present else {}
+    annotations = {m.body.gnd: g.period_annotation(m.body, *wd_years.get(m.qids[0], (set(), set()))[:2])
+                   for m in matches if m.status == g.VORHANDEN and m.qids}
+    dates: list = []
+    if propose_dates:  # Zeitraum als Qualifikator P580/P582 an der P227-Aussage
+        pairs = {(m.qids[0], m.body.gnd) for m in matches if m.status == g.VORHANDEN and len(m.qids) == 1}
+        dates = g.qualifier_proposals(matches, wd.p227_qualifiers(pairs), int(date[:4]))
+
+    # 5. P227-Werte auf umgelenkte/gelöschte GND: Werte im Pool und alte IDs, deren Endziel hier liegt
+    redirect_findings: list = []
+    if redirects:
+        gnds = {b.gnd for b in bodies}
+        scope = {v for vs in item_values.values() for v in vs}
+        scope |= {o for o in redirects if resolve(redirects, o)[0] in gnds}
+        statements = wd.p227_statements(scope & set(redirects))
+        targets = {resolve(redirects, st["value"])[0] for st in statements} - {None}
+        owners = wd.lookup("P227", targets) if targets else {}
+        redirect_findings = g.p227_redirect_findings(statements, redirects, owners)
+    outside = ({q for m in matches for q in m.qids} | {f.qid for f in redirect_findings}) - set(items)
+    items.update(wd.fetch_items(outside))
+
+    # 6. Ausgabe
+    out = config.OUT_DIR
+    out.mkdir(parents=True, exist_ok=True)
+    stem = f"register_gnd_{country}_{date}"
+    export.write_gnd_report(matches, items, out / f"{stem}.csv", annotations)
+    export.write_gnd_format(fmt_findings, items, out / f"{stem}_formatfehler.csv")
+    export.write_gnd_redirects(redirect_findings, items, out / f"{stem}_umlenkungen.csv")
+    tag = f"gnd_{country}"
+    qs_files = export.write_qs_groups(g.p227_commands(matches, date), "P227", tag, "neu", date)
+    qs_files += export.write_qs_groups(g.redirect_commands(redirect_findings, date), "P227", tag, "korrektur", date)
+    qs_files += export.write_qs_groups(g.qualifier_commands(dates), "P227", tag, "zeitraum", date)
+    _save(f"gnd_results_{country}_{date}", [m.to_dict() for m in matches])
+    mnm_files = export_mnm(country, date, include_historical)
+    counts = Counter(m.status for m in matches)
+    by_group = Counter((t, m.body.country) for m in matches for t in m.body.types if t in types)
+    linked = Counter((t, m.body.country) for m in matches for t in m.body.types if t in types and m.body.wikidata)
+    summary = {
+        "date": date, "country": country, "types": types, "subclasses": subclasses, "limit": limit,
+        "total": total, "records": len(bodies), "pool": len(pool.items), "counts": counts,
+        "statuses": g.STATUSES, "dump": meta.get("dump"), "dump_date": file_date(config.gnd_dump_path()),
+        "built": meta.get("built"), "dump_stats": dump_stats,
+        "groups": {f"{t}/{c}": [by_group[(t, c)], linked[(t, c)]] for (t, c) in sorted(by_group)},
+        "mnm": {p.name: n for p, n in mnm_files}, "format": len(fmt_findings),
+        "in_wikidata": sum(m.in_wikidata for m in matches),
+        "include_historical": include_historical, "propose_dates": propose_dates,
+        "period": {
+            "historisch": sum(m.body.period_status == "historisch" for m in matches),
+            "vorgaenger": sum(m.body.period_status == "vorgaenger" for m in matches),
+            "annotations": Counter(n for a in annotations.values() for n in a["anmerkung"].split(", ") if n),
+            "dates": {"P580": sum(bool(d.start) for d in dates), "P582": sum(bool(d.end) for d in dates),
+                      "statements": len(dates)},
+        },
+        "redirects": {**rd_info, "findings": Counter((f.status, f.action) for f in redirect_findings)},
+        "qs": [p.name for p in qs_files],
+    }
+    export.write_gnd_summary(summary, out / f"{stem}.md")
+    return summary
+
+
+def _latest_gnd_results(country: str, date: str | None) -> tuple[str, list[dict]]:
+    if date:
+        d = _load(f"gnd_results_{country}_{date}")
+        if d is None:
+            raise SystemExit(f"Kein GND-Abgleich vom {date} für {country} (data/gnd_results_{country}_{date}.json).")
+        return date, d
+    files = sorted(config.DATA_DIR.glob(f"gnd_results_{country}_*.json"))
+    if not files:
+        raise SystemExit(f"Noch kein GND-Abgleich für {country}: zuerst `registry --source gnd` ausführen.")
+    return files[-1].stem.rsplit("_", 1)[-1], json.loads(files[-1].read_text(encoding="utf-8"))
+
+
+def export_mnm(country: str = "Q183", date: str | None = None,
+               include_historical: bool = False) -> list[tuple[Path, int]]:
+    """Mix'n'match-CSV je Typ und Land aus dem letzten GND-Abgleich (nur GND ohne P227 in Wikidata).
+
+    Historische Einrichtungen und frühere Namensformen nur mit include_historical.
+    """
+    from . import gnd as g
+    from .sources.gnd import COUNTRY_GROUPS
+
+    date, rows = _latest_gnd_results(country, date)
+    matches = [g.GndMatch.from_dict(d) for d in rows]
+    return export.write_mnm(g.mnm_rows(matches, include_historical), date, lands=COUNTRY_GROUPS[country])
+
+
+def gnd_labels(client: CachedClient, country: str = "Q183", rebuild: bool = False) -> dict:
+    """Deutsche Labels, Beschreibungen und Aliase aus der GND für Items mit passender P227.
+
+    Liest Wikidata live (Cache-Dauer: GLAMSYNC_WIKIDATA_CACHE_HOURS) und schreibt nur Dateien:
+    QuickStatements je Art (Lde/Dde/Ade) und einen Bericht. Vorhandenes wird nie überschrieben.
+    """
+    from . import gnd as g
+    from .sources import gnd as gnd_src
+
+    if country not in gnd_src.COUNTRY_GROUPS:
+        raise SystemExit(f"--country für die GND: {', '.join(gnd_src.COUNTRY_GROUPS)}")
+    date = export.today()
+    gnd_table(rebuild)
+    bodies = {b.gnd: b for b in gnd_src.load_table(config.GND_TABLE, gnd_src.COUNTRY_GROUPS[country])}
+    terms = Wikidata(client).gnd_terms(bodies)
+    log.info("GND-Bezeichnungen: %d Items mit P227 aus %d Einrichtungen", len(terms), len(bodies))
+    proposals = g.term_proposals(terms, bodies)
+
+    out = config.OUT_DIR
+    tag = f"gnd_{country}"
+    report = out / f"bezeichnungen_{tag}_{date}.csv"
+    export.write_terms_report(proposals, report)
+    files, counts = [], {}
+    for kind in export.TERM_KINDS:
+        groups = g.term_commands(proposals, kind)
+        counts[kind] = {"items": len(groups), "lines": sum(len(x) for x in groups)}
+        files += export.write_qs_groups(groups, kind, tag, "neu", date)
+    return {"date": date, "country": country, "items": len(terms), "counts": counts,
+            "notes": sum(bool(p.note) for p in proposals), "report": report.name,
+            "files": [p.name for p in files]}
+
+
+# --- Anreicherung aus der GND (P214, P213, P571, P131, P31) -----------------------------
+def gnd_enrich(client: CachedClient, country: str = "Q183") -> dict:
+    """QuickStatements für Items mit GND (Pool des Landes): fehlende VIAF/ISNI/Gründung/Ort und
+    genauere Art (P31) aus dem GND-Satz. Siehe glamsync/enrich.py."""
+    from . import enrich as E
+    from .sources import gnd as gnd_src
+
+    wd = Wikidata(client)
+    date = export.today()
+    by_gnd = {b.gnd: b for b in gnd_src.load_table(config.GND_TABLE, gnd_src.COUNTRY_GROUPS[country])}
+
+    # 1. Pool des Landes (Museum/Bibliothek/Archiv, bei Q183 auch DDR), Aussagen live über die API
+    qids: set[str] = set()
+    for c in [country] + ([GDR] if country == "Q183" else []):
+        for t in TYPES:
+            # nur die QIDs werden gebraucht (Aussagen kommen live über die API) → auch ältere Datei
+            path = _data_path(f"wikidata_{c}_{t}_sub")
+            d = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else fetch_wikidata(client, c, [t], True)[t]
+            qids |= set(d)
+    log.info("Pool %s: %d Items – lade Aussagen über die Wikidata-API", country, len(qids))
+    ents = wd.entity_claims(qids, E.PROPS)
+    pairs = []
+    for q, e in ents.items():
+        gnds = [s["value"] for s in e["claims"].get("P227", []) if s["rank"] != "deprecated" and s["value"] in by_gnd]
+        if len(gnds) == 1:
+            pairs.append((q, e, by_gnd[gnds[0]]))
+    log.info("Items mit genau einer GND aus der Tabelle: %d", len(pairs))
+
+    # 2. VIAF/ISNI: in ganz Wikidata schon vergeben?
+    cand = {"P214": set(), "P213": set()}
+    for q, e, b in pairs:
+        for prop, raw in (("P214", b.viaf[:1]), ("P213", b.isni[:1])):
+            if raw and not E._values(e, prop) and (v := normalize(prop, raw[0])):
+                cand[prop].add(v)
+    owners = {p: wd.lookup(p, vs) if vs else {} for p, vs in cand.items()}
+
+    # 3. Ortsteile der GND-Orte (nur für P131-Kandidaten)
+    pc = {p["qid"] for q, e, b in pairs if not E._values(e, "P131")
+          for p in b.places if p.get("qid") and len({x.get("qid") for x in b.places if x.get("qid")}) == 1}
+    districts = wd.settlement_labels(pc) if pc else {}
+
+    # 4. P31: Zuordnungstabelle Oberbegriff → Klasse (neue Begriffe als Entwurf ergänzen)
+    map_path = config.DATA_DIR / "gnd_oberbegriff_p31.csv"
+    class_map, class_root, rows = E.load_class_map(map_path)
+    generic_items = [(q, e, b) for q, e, b in pairs
+                     if (v := E._values(e, "P31")) and all(x in E.GENERIC for x in v) and b.broader]
+    need: dict[str, int] = Counter(t for _, _, b in generic_items for t in b.broader if t not in E.GENERIC.values())
+    new_terms = [t for t in need if not rows.get(t, {}).get("qid")]
+    found = wd.class_by_label(new_terms, E.GENERIC) if new_terms else {}
+    for t, n in need.items():
+        r = rows.setdefault(t, {"oberbegriff": t, "qid": "", "wurzel": "", "alternativen": "", "freigegeben": ""})
+        r[f"anzahl_{country}"] = str(n)
+        r["anzahl"] = str(sum(int(r.get(f"anzahl_{c}") or 0) for c in ("Q183", "Q40", "Q39")))
+        if t in found and not r["qid"]:
+            hits = sorted(set(found[t]))
+            r["qid"], r["wurzel"] = hits[0]
+            r["alternativen"] = ", ".join(f"{c} ({w})" for c, w in hits[1:])
+    E.write_class_map(map_path, rows)
+
+    # 5. Vorschläge
+    props: list = []
+    for q, e, b in pairs:
+        props += E.id_proposals(q, e, b, owners)
+        props += [x for x in (E.inception_proposal(q, e, b), E.place_proposal(q, e, b, districts),
+                              E.class_proposal(q, e, b, class_map, class_root)) if x]
+
+    # 6. Ausgabe
+    out = config.OUT_DIR
+    tag = f"gnd_{country}"
+    files = []
+    for prop, label in (("P214", "neu"), ("P213", "neu"), ("P571", "neu"), ("P131", "neu"), ("P31", "ersetzen")):
+        groups = [x.commands(date) for x in props if x.prop == prop and x.action == "neu"]
+        files += export.write_qs_groups(groups, prop, tag, label, date)
+    report = out / f"anreicherung_{tag}_{date}.csv"
+    with report.open("w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh, delimiter=";")
+        w.writerow(["qid", "label", "gnd", "property", "wert", "entfernt", "aktion", "hinweis"])
+        lab = {q: (e["labels"].get("de") or e["labels"].get("mul") or next(iter(e["labels"].values()), "")) for q, e in ents.items()}
+        gnd_of = {q: b.gnd for q, _, b in pairs}
+        for x in props:
+            w.writerow([x.qid, lab.get(x.qid, ""), gnd_of.get(x.qid, ""), x.prop, x.value, x.remove, x.action, x.note])
+    counts = Counter((x.prop, x.action) for x in props)
+    return {"date": date, "country": country, "items": len(pairs), "counts": counts,
+            "files": [p.name for p in files], "report": report.name, "map": str(map_path),
+            "map_open": sum(1 for t in need if t not in class_map)}

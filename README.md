@@ -37,6 +37,8 @@ Voraussetzung: Python ≥ 3.11.
 | `DDB_API_KEY` | Für die hier genutzten DDB-Endpunkte **nicht nötig** |
 | `GLAMSYNC_CONTACT` | Kontaktangabe im User-Agent, die die Wikimedia-User-Agent-Policy verlangt; Standard ist die Repository-URL |
 | `GLAMSYNC_WIKIDATA_CACHE_HOURS` | Lebensdauer des Wikidata-Caches in Stunden (Standard 12) |
+| `GND_DUMP_PATH` | lokaler GND-Dump Körperschaften (siehe „GND-Dump Körperschaften“) |
+| `GND_REDIRECTS_PATH` | GND-Umlenkungs-/Löschdatei (leer: neueste `authorities-gnd_umlenk_loesch_*.jsonld.gz` neben dem Dump) |
 
 API-Schlüssel werden nur aus Umgebungsvariablen bzw. `.env` gelesen, nie geloggt und nicht in den
 Cache geschrieben. `.env` ist über `.gitignore` von Git ausgeschlossen.
@@ -180,6 +182,317 @@ Ergebnis 16.11.2026 (Kandidaten-Pool mit Unterklassen):
 | ungültige Werte → Löschvorschlag | 1 | 0 |
 | nicht im Register → Löschvorschlag (prüfen) / nur Bericht | 9 / 1 | 11 / 84 |
 
+## GND-Dump: Körperschaften ↔ Wikidata (P227)
+
+```bash
+python -m glamsync fetch --source gnd                          # Tabelle aus dem Dump erzeugen (~3 min, nur bei neuem Dump)
+python -m glamsync registry --source gnd --country Q183 --limit 50   # Trockenlauf
+python -m glamsync registry --source gnd --country Q183        # Deutschland (inkl. DDR und Deutsches Reich)
+python -m glamsync registry --source gnd --country Q183 --propose-dates   # zusätzlich P580/P582 an P227
+python -m glamsync registry --source gnd --country Q183 --include-historical  # auch aufgelöste/frühere Namen
+python -m glamsync export-mnm --country Q183                   # Mix'n'match-Dateien (CSV) erneut schreiben
+python -m glamsync export-mnm --country Q183 --include-historical
+python -m glamsync labels --source gnd --country Q183          # deutsche Labels/Beschreibungen/Aliase (QS)
+```
+
+Voraussetzung sind die drei Dumps und `GND_DUMP_PATH` (siehe „GND-Dump Körperschaften“ unter
+„Erkundung der Quellen“). `registry --source gnd` erzeugt die Tabelle bei Bedarf selbst.
+Für die Prüfung auf Umlenkungen und Löschungen kommt die monatliche Datei dazu:
+
+```bash
+curl -o data/gnd/authorities-gnd_umlenk_loesch_20261113.jsonld.gz \
+  https://data.dnb.de/opendata/authorities-gnd_umlenk_loesch_20261113.jsonld.gz   # 8,5 MB
+```
+
+`GND_REDIRECTS_PATH` zeigt darauf. Ohne Angabe nimmt das Tool die neueste solche Datei neben dem
+Dump. Fehlt sie ganz, läuft der Abgleich ohne diese Prüfung, mit Warnung und Hinweis in der
+Zusammenfassung.
+
+**Ziel und Umfang.** Gesucht werden Museen, Bibliotheken und Archive aus der GND, deren GND in
+Wikidata fehlt. Für P227 entstehen **keine QuickStatements**, denn die Erkundung hat gezeigt:
+
+- Die Wikidata-Links der GND sind Rückverweise auf vorhandene P227-Aussagen. Von 2.506
+  deutschen Einrichtungen mit Link fehlte P227 bei keinem einzigen Item, das nicht schon an
+  einem anderen Item hing.
+- Die GND enthält keine ISIL.
+
+Ergebnis sind daher eine **Kandidatenliste nach Name und Ort** zur Handprüfung und
+**Mix'n'match-Dateien**. Für Items, die die GND schon tragen, erzeugt `labels` außerdem deutsche
+Labels, Beschreibungen und Aliase (siehe unten).
+
+**Tabelle** (`data/gnd_einrichtungen.sqlite`, Tabelle `body`, eine Zeile je Einrichtung). Der
+Dump wird streamend gelesen und auf zwei Bedingungen gefiltert:
+
+- **Typfilter Körperschaft:** mindestens ein `@type` aus `CorporateBody`, `OrganOfCorporateBody`,
+  `Company`, `MusicalCorporateBody`, `ReligiousCorporateBody`, `ReligiousAdministrativeUnit`,
+  `ProjectOrProgram`, aber kein ausgeschlossener Typ (`FictiveCorporateBody`, Gebietskörperschaft,
+  Kongress, Bauwerk, Person, Werk …);
+- **Museum/Bibliothek/Archiv:** ein Oberbegriff, der in der Sachbegriff-Hierarchie unter
+  Museum, Bibliothek oder Archiv liegt (streng, siehe Erkundung).
+
+Gespeichert werden GND-ID, Name, Varianten und Kurzformen, Typ(en), Oberbegriffe, Land,
+Orte (Name, QID, Koordinaten), Homepage, Wikidata/VIAF/ISNI aus `owl:sameAs`,
+Gründungs- und Auflösungsdatum, übergeordnete Körperschaft (mit Namen) und umgelenkte alte GND-IDs.
+Zum Zeitraum kommen hinzu:
+
+| Spalte | Inhalt |
+|---|---|
+| `start_year`, `end_year` | genaues Jahr, nur bei genau einem Wert wie `1606`, `15.09.1883` oder `XX.05.1952`; sonst leer |
+| `period_raw` | alle Rohwerte, z. B. `1606–1749`, `1619 / 1962–1810`, `ca. 1972-2002` (kombiniertes Feld) |
+| `closed` | Ende vorhanden oder Bereich mit Ende im kombinierten Feld |
+| `predecessors` | `gndo:precedingCorporateBody` |
+| `successors` | Sätze (aller Körperschaften), die diesen als Vorgänger nennen |
+| `historical` | abgeschlossen **und** ohne Nachfolger |
+
+Daraus folgt der Zeitraum-Status: `historisch` (aufgelöst) oder `vorgaenger` (frühere Namensform
+mit Nachfolgesatz). Ein fehlendes Ende gilt nicht als Beleg, dass die Einrichtung besteht. Bei
+geänderten Spalten baut das Tool die Tabelle beim nächsten Lauf neu (`SCHEMA_VERSION`). In
+derselben SQLite-Datei steht die Tabelle `redirect` (`old_id`, `new_id`, `kind` = `umgelenkt` |
+`geloescht`).
+Die DNB liefert Umlaute zerlegt (Unicode NFD, „a“ + Trema). `GndBody` bringt alle Texte in die
+übliche Form NFC; das wirkt auch auf eine schon gebaute Tabelle und gespeicherte Ergebnisse.
+Defekte Knoten und Sätze werden übersprungen, gezählt und geloggt. Sätze mit falscher Prüfziffer
+werden ebenfalls gezählt.
+
+**Land.** Grundlage ist `geographicAreaCode`. Laut GND-Vokabular bedeuten `XA-DE` Deutschland,
+`XA-DDDE` „Deutschland (DDR)“ (22.479 Körperschaften) und `XA-DXDE` „Deutschland, Deutsches Reich“
+(109.990, bis 1945). `--country Q183` umfasst alle drei, und jedes bekommt eigene
+Mix'n'match-Dateien (`DE`, `DDR`, `DR`). Einrichtungen des Deutschen Reichs können heute
+außerhalb Deutschlands liegen, z. B. in Königsberg. Bei mehreren Codes gilt die Reihenfolge
+DE, DDR, DR. `Q40` umfasst `XA-AT*`, `Q39` umfasst `XA-CH*`. Der Wikidata-Pool für Q183 enthält
+auch Items mit P17 = DDR (Q16957); Items mit P17 = Deutsches Reich sind nicht im Pool.
+
+**Normalisierung** (`normalize.py`). GND-IDs werden normalisiert (`…/gnd/5036103-x` → `5036103-X`).
+`gnd_checksum_ok` prüft die Prüfziffer nach Modulo 11 mit den Gewichten 2, 3, … von rechts:
+
+- neue IDs: (11 − Summe mod 11) mod 11;
+- alte IDs mit Bindestrich: Summe mod 11;
+- in beiden Fällen steht 10 für X.
+
+Das Verfahren ist an allen 2,1 Mio. IDs der drei Dumps belegt. Eine falsche Prüfziffer an einer
+Wikidata-P227 erscheint nur im Bericht. `normalize_gnd` prüft weiterhin nur das Format, damit
+andere Abläufe solche Werte nicht zur Löschung vorschlagen.
+
+**Abgleich** (`glamsync/gnd.py`, ohne Netz, getestet):
+
+| Status | Regel | Ausgabe |
+|---|---|---|
+| `vorhanden` | GND steht an genau einem Item (P227, ganz Wikidata) | – |
+| `vorhanden_alt` | eine umgelenkte alte GND der Einrichtung steht an einem Item | Bericht |
+| `kandidat_sicher` | aus stark/schwach: genau ein Item ohne P227, Ort gleich, ein GND-Name ist einem **Label** (nicht Alias) sehr ähnlich (kompakt ≥ 0,95, Ortsname darf fehlen); kein anderer sicherer Kandidat für dasselbe Item | `qs_P227_gnd_<land>_neu_<datum>_partNN.txt`, nicht in Mix'n'match |
+| `kandidat_stark` | genau ein Pool-Item mit **gleichem Namen UND gleichem Ort**, ohne P227 | CSV, Handprüfung |
+| `konflikt` | der starke Kandidat hat schon eine andere P227 (Vorgänger, Untereinheit, GND-Dublette?) | Bericht |
+| `mehrdeutig` | GND an mehreren Items, mehrere starke Kandidaten, oder ein Item ist starker Kandidat für mehrere GND | Bericht |
+| `kandidat_schwach` | Name gleich bei anderem/unbekanntem Ort; Name ähnlich (≥ 0,85) bei gleichem Ort; Website gleich bei ähnlichem Name (≥ 0,6) | CSV |
+| `kein_treffer` | – | – |
+| `historisch` | abgeschlossen, ohne Nachfolger: keine Kandidatensuche | Bericht |
+| `vorgaenger` | abgeschlossen, mit Nachfolgesatz: keine Kandidatensuche | Bericht |
+| `gnd_umgelenkt` / `gnd_geloescht` | die GND ist nach dem Dump-Stand umgelenkt bzw. gelöscht (Umlenkungsdatei) | Bericht |
+
+`historisch` und `vorgaenger` greifen nur, wenn die GND nicht schon in Wikidata steht. Mit
+`--include-historical` werden diese Einrichtungen normal gesucht und exportiert; die
+Mix'n'match-Beschreibung nennt dann Zeitraum und „aufgelöst“ bzw. „früherer Name“. Umgelenkte und
+gelöschte GND erscheinen nie als Kandidat und nie in Mix'n'match.
+
+- **Gleicher Name:** wie beim Registerabgleich nach Normalisierung identisch. Verglichen
+  werden Haupt-, Varianten- und Kurzform der GND, jeweils auch mit angehängtem Ort, mit Labels
+  und Aliassen (de/en). Der Name ohne Orts-Klammer (`Stadtarchiv (Oberursel (Taunus))` →
+  `Stadtarchiv`) zählt nur zusammen mit gleichem Ort.
+- **Gleicher Ort:** Es reicht eine der folgenden Bedingungen:
+  1. Die Wikidata-QID des GND-Orts kommt beim Item vor, als P131 (eine oder zwei Stufen),
+     P276, P276/P131 oder P159.
+  2. Der Ortsname stimmt mit dem Label eines dieser Orte überein.
+  3. Die Koordinaten liegen höchstens 10 km vom GND-Ort entfernt.
+- **Mutter-Einrichtung:** Hat ein Item als P227 die GND der übergeordneten Körperschaft, ist
+  es kein Kandidat. So wird etwa die „Staatsbibliothek zu Berlin. Ostasienabteilung“ nicht der
+  Staatsbibliothek (Q170109) zugeordnet.
+- **Pool:** Wikidata-Items des Landes mit P31/P279* = Museum, Bibliothek oder Archiv.
+- **Formatbefunde:** P227-Werte im Pool mit falschem Format oder falscher Prüfziffer stehen
+  nur im Bericht.
+
+**Zeitraum bei vorhandenen GND-IDs.** Für jede Einrichtung mit Status `vorhanden` liest das Tool
+P571 und P576 des Items live und füllt im Bericht die Spalten `gnd_zeitraum`, `gnd_historisch`,
+`wd_p571`, `wd_p576` und `anmerkung`. Die Anmerkungen stehen nur im Bericht:
+
+| Anmerkung | Regel |
+|---|---|
+| `historisch_in_wikidata` | GND: aufgelöst (ohne Nachfolger); Item ohne P576 |
+| `zeitraum_abweichend` | genaues GND-Gründungsjahr ≠ P571 (nur bei Sätzen ohne Vorgänger) oder genaues Auflösungsjahr ≠ P576 (nur bei aufgelösten) |
+| `vorgaenger_gnd` | Item trägt die GND einer früheren Namensform |
+| `p576_nur_in_wikidata` | GND ohne Ende, Item mit P576 |
+
+**`--propose-dates`** (Standard aus) schreibt den Zeitraum des GND-Satzes als **Qualifikator an die
+P227-Aussage**: P580 (Startzeitpunkt) und P582 (Endzeitpunkt), jeweils mit Jahresgenauigkeit. Die
+Angaben beschreiben, wann der GND-Satz bzw. die Namensform galt, und nicht Gründung oder Auflösung
+der Einrichtung. Deshalb gibt es keine P571/P576 am Item. Ein Ende in der GND ist meist eine
+Umbenennung und als Datum der Einrichtung oft falsch. Auch frühere Namensformen bekommen ihren
+Zeitraum. Bedingungen:
+- Status `vorhanden` (GND an genau einem Item) und genau eine nicht-deprecated P227-Aussage mit
+  diesem Wert;
+- das Jahr ist genau (kein „ca.“, kein Jahrhundert, kein `19XX`, kein kombiniertes Feld, nur ein Wert);
+- keine Vorschläge bei mehreren Beginn- oder Endwerten. Das sind Wiedereröffnungen, z. B.
+  Schlossmuseum Darmstadt `1924 / 1965–1944`;
+- keine Jahre in der Zukunft, Beginn nicht nach Ende;
+- **keine Dopplung:** Hat die Aussage schon einen P580 bzw. P582 (gleich welcher Wert, auch
+  „unbekannter Wert“), wird dieser Qualifikator nicht ergänzt.
+
+QuickStatements ergänzt bei gleichem P227-Wert die vorhandene Aussage und legt keine zweite an.
+Eine eigene Fundstelle bekommt der Qualifikator nicht; er stammt aus dem Satz, auf den die
+Aussage selbst verweist.
+
+**Umgelenkte und gelöschte P227 in Wikidata.** Geprüft werden alle P227-Werte des Pools und alle
+alten IDs, deren Endziel eine Einrichtung des Laufs ist. Ketten werden bis zum Endziel aufgelöst.
+Bereits als `deprecated` markierte Aussagen bleiben unberührt.
+
+| Befund | Ausgabe |
+|---|---|
+| `p227_umgelenkt`, alte Aussage ohne Quellen und Qualifikatoren, Ziel an keinem anderen Item | Korrektur-QuickStatements: alte Aussage entfernen, Ziel mit Quelle ergänzen (falls es fehlt) |
+| `p227_umgelenkt`, mit Quellen/Qualifikatoren oder Ziel an anderem Item | nur Bericht (von Hand deprecaten) |
+| `p227_geloescht` | nur Bericht |
+
+Aufspaltungen (mehrere Ziele) werden nie automatisch bearbeitet; die Datei enthält derzeit keine.
+
+**Mix'n'match** (`out/mnm_gnd_<typ>_<land>_<datum>.csv`, je Typ und Land). Aufgenommen werden
+alle Einrichtungen, deren GND weder aktuell noch als alte ID in Wikidata steht, also auch
+Kandidaten, Konflikte und Fälle ohne Treffer. Ohne `--include-historical` fehlen historische
+Einrichtungen und frühere Namensformen. Die Datei hat eine Kopfzeile und folgende Spalten:
+
+| Spalte | Inhalt |
+|---|---|
+| `id` | GND-ID |
+| `name` | Hauptname aus der GND |
+| `description` | Ort; Oberbegriff (z. B. Kunstmuseum); Zeitraum (`1907–1990`, `gegr. 1907`, `bis 1990`); `DDR` bzw. `Deutsches Reich`; `Teil von:` übergeordnete Körperschaft. Höchstens 255 Zeichen, **ohne ISIL** (nicht in der GND) |
+| `url` | `https://d-nb.info/gnd/<id>` (so stimmt der Link auch ohne Verknüpfung des Katalogs mit P227) |
+| `type` | Q33506 Museum, Q7075 Bibliothek oder Q166118 Archiv |
+
+Das Format folgt der Mix'n'match-Testdatei: CSV mit Komma, UTF-8, genau eine Kopfzeile.
+Felder mit Komma oder Anführungszeichen werden in `"…"` gesetzt. Einrichtungen mit mehreren Typen
+stehen in jeder passenden Datei.
+
+**Katalog anlegen** auf <https://mix-n-match.toolforge.org/#/import>:
+
+1. Neuen Katalog angeben. Die Property **P227** eintragen, dann übernimmt die Seite die Angaben
+   der Property. Dazu Name, Beschreibung, Sprache `de` und als Standardtyp den Wert aus der
+   Spalte `type` (z. B. Q33506). Für einen gemeinsamen Katalog aus mehreren Typen Q43229
+   (Organisation) als Standardtyp wählen; jede Zeile behält ihren eigenen `type`.
+2. Als Quelle die CSV-Datei hochladen und **Komma** als Trennzeichen wählen.
+3. Mit **„Test“** die ersten bis zu 1.000 Zeilen ohne Änderung prüfen. Erst danach
+   „Looks good, queue import/update“ wählen.
+
+Weitere optionale Spalten der Importseite: `autoq` (Kandidat als automatische Zuordnung),
+`P17`/`P131` und `coord` werden bewusst nicht geschrieben. Die Kandidaten sollen zuerst von Hand
+geprüft werden, und die Koordinaten der GND bezeichnen nur den Ortsmittelpunkt.
+
+**Ausgabe:**
+
+- `out/register_gnd_<land>_<datum>.md` – Zusammenfassung mit GND-Zahlen (Dump, Einrichtungen je
+  Typ/Land und Anteil mit Wikidata-Link, Status, Mix'n'match-Dateien)
+- `out/register_gnd_<land>_<datum>.csv` – Kandidatenliste/Bericht, eine Zeile je Einrichtung
+- `out/register_gnd_<land>_<datum>_formatfehler.csv` – P227-Formatbefunde im Pool
+- `out/register_gnd_<land>_<datum>_umlenkungen.csv` – P227 auf umgelenkte/gelöschte GND
+- `out/qs_P227_gnd_<land>_korrektur_<datum>_partNN.txt` – Korrekturen (je 500 Zeilen)
+- `out/qs_P227_gnd_<land>_zeitraum_<datum>_partNN.txt` – Qualifikatoren P580/P582, nur mit `--propose-dates`
+- `out/mnm_gnd_<typ>_<land>_<datum>.csv` – Mix'n'match
+- `data/gnd_results_<land>_<datum>.json` – Grundlage für `export-mnm`
+
+**Ergebnis 21.11.2026 (Q183, Kandidaten-Pool 17.146 Items).** 10.257 Einrichtungen: 9.788 DE,
+61 DDR, 487 Deutsches Reich. Manche haben mehrere Typen.
+
+| Status | Anzahl |
+|---|---:|
+| vorhanden | 2.830 |
+| vorhanden_alt | 2 |
+| kandidat_stark | 1.075 (Ort über QID 882, über Entfernung 189, über Namen 4; 27 davon aufgelöst) |
+| kandidat_schwach | 1.187 |
+| konflikt | 395 (meist Vorgänger oder GND-Dubletten, z. B. UB Bonn bis 1993 ↔ ULB Bonn) |
+| mehrdeutig | 139 |
+| kein_treffer | 4.629 |
+
+- Eine Zufallsstichprobe von 30 starken Kandidaten war vollständig plausibel. Die Liste ist
+  trotzdem nur zur Handprüfung gedacht.
+- Im Pool gibt es keine P227-Formatfehler.
+- Mix'n'match: 7.466 Zeilen in 9 CSV-Dateien. Größte Dateien: Museum DE 2.996, Bibliothek DE 2.997,
+  Archiv DE 957, Bibliothek DR 398.
+
+**Ergebnis 22.11.2026 mit Zeitraum und Umlenkungen** (`--propose-dates`, Umlenkungsdatei vom
+13.11.2026):
+
+| Status | DE (Q183) | AT (Q40) | CH (Q39) |
+|---|---:|---:|---:|
+| vorhanden | 3.538 | 253 | 285 |
+| vorhanden_alt | 2 | 0 | 0 |
+| kandidat_stark | 638 | 168 | 169 |
+| kandidat_schwach | 876 | 119 | 120 |
+| konflikt | 179 | 26 | 17 |
+| mehrdeutig | 56 | 15 | 11 |
+| kein_treffer | 3.668 | 496 | 255 |
+| historisch | 383 | 43 | 22 |
+| vorgaenger | 915 | 99 | 84 |
+| gnd_umgelenkt | 2 | 0 | 0 |
+| **Anmerkungen** (Items mit P227) | | | |
+| historisch_in_wikidata | 46 | 4 | 4 |
+| zeitraum_abweichend | 133 | 5 | 18 |
+| vorgaenger_gnd | 243 | 25 | 20 |
+| p576_nur_in_wikidata | 28 | 1 | 6 |
+| **Vorschläge** | | | |
+| P571 | 426 | 27 | 37 |
+| P576 | 23 | 2 | 3 |
+| P227-Korrekturen | 0 | 0 | 0 |
+
+- Seit dem 21.11. ist `vorhanden` gestiegen (2.830 → 3.538), vor allem durch die Zuordnungen in
+  Mix'n'match. Starke Kandidaten sinken von 1.075 auf 638, weil historische Einrichtungen und
+  frühere Namensformen nicht mehr gesucht werden.
+- **P227 auf umgelenkte GND (DE):** 6 Aussagen. Drei haben eine Quelle, bei dreien steht das Ziel
+  an einem anderen Item. Alle sechs stehen daher nur im Bericht.
+- Mix'n'match ohne historische Einrichtungen: DE Museum 2.122, Bibliothek 2.188, Archiv 773;
+  AT 482/184/163; CH 369/132/72.
+- Die Stichprobe von P571 war plausibel. Bei P576 führten Wiedereröffnungen zu Fehlern, z. B.
+  Schlossmuseum Darmstadt; die Regel schließt sie jetzt aus.
+
+### Deutsche Labels, Beschreibungen und Aliase aus der GND
+
+`labels --source gnd` liest live alle Items, deren P227 (nicht deprecated) auf eine Einrichtung
+der Tabelle zeigt, mit ihrem deutschen und „mul“-Label, der deutschen Beschreibung und den
+Aliassen (de/mul). Daraus entstehen QuickStatements, die nur **ergänzen**:
+
+| Art | Bedingung | Wert |
+|---|---|---|
+| `Lde` | kein de- und kein mul-Label | GND-Name; eine Orts-Klammer wird angehängt: „Stadtarchiv (Kelsterbach)“ → „Stadtarchiv Kelsterbach“ |
+| `Dde` | keine de-Beschreibung, GND mit Ort | „Oberbegriff in Ort“, z. B. „Heimatmuseum in Weißenhorn“, „wissenschaftliche Bibliothek in München“; sind alle GND-Sätze des Items aufgelöst: „ehemaliges …“/„ehemalige …“ |
+| `Ade` | Name ist weder Label noch schon Alias | Hauptname und Varianten der GND in Label-Form |
+
+- **Nur passende Items:** Die GND muss an genau einem Item stehen, und das Item muss in Wikidata
+  ein Museum, eine Bibliothek oder ein Archiv sein (P31/P279*). Für Menschen (Q5), andere Items und
+  GND an mehreren Items gibt es nur einen Hinweis im Bericht, weil die P227 dort zu prüfen ist.
+- **Oberbegriff:** der erste GND-Oberbegriff, der eine Einrichtung benennt (…museum, …bibliothek,
+  …archiv, …bücherei, …sammlung, …galerie, …thek), sonst Museum/Bibliothek/Archiv. Ein führendes
+  Adjektiv wird kleingeschrieben.
+- **Aliase ohne:** übrige Klammerformen (Zeiträume, Übersetzungen, GND-Zusätze),
+  Hierarchieformen „Träger. Einrichtung“, erkennbar fremdsprachige Formen und Kürzel mit bis zu
+  3 Zeichen (z. B. „ULB“, „MAK“; nicht eindeutig) sowie Einwortformen ohne Leerzeichen und
+  Bindestrich (z. B. „Bistumsarchiv“, „HStAS“; Bindestrich-Namen wie „Städel-Museum“ bleiben).
+- **Sprachprüfung der Aliase** (`glamsync/lang.py`, Hunspell): Ein Alias entfällt, wenn er kein
+  rein deutsches Wort enthält, aber ein fremdsprachiges („German Historical Museum“, „Muzeum
+  Narodowe“, „Galleria di Stato“), oder in nichtlateinischer Schrift steht. Wörter in beiden
+  Sprachen („Museum“, „Berlin“), Eigennamen („Folkwang“, „Selma“) und Abkürzungen entscheiden nichts.
+  Benötigt `hunspell` mit `de_DE` (und `en_US`/`en_GB`); weitere Sprachen über eine Wortliste und
+  Buchstaben außerhalb des deutschen Alphabets.
+- **Bereits eingespielte fremdsprachige Aliase entfernen:** `qs_Ade_gnd_Q183_loeschen_<datum>_partNN.txt`
+  mit `-Q…<TAB>Ade<TAB>"Alias"` (QuickStatements entfernt genau diesen einen Alias über
+  `wbsetaliases remove`); Prüfliste `aliase_fremdsprachig_gnd_Q183_<datum>.csv`.
+- **Eindeutigkeit:** Wikidata verlangt Label + Beschreibung je Sprache eindeutig. Ergäbe sich
+  dasselbe Paar für mehrere Items im Lauf, entfällt die Beschreibung. Kollisionen mit Items
+  außerhalb des Laufs meldet erst QuickStatements.
+- Für Werte gibt es keine Fundstellen. Werte mit Anführungszeichen werden ausgelassen.
+- Direkt nach dem Einspielen erneut ausführen: `GLAMSYNC_WIKIDATA_CACHE_HOURS=0` setzen.
+
+Ausgabe: `out/qs_{Lde,Dde,Ade}_gnd_<land>_neu_<datum>_partNN.txt` (je 500 Zeilen) und
+`out/bezeichnungen_gnd_<land>_<datum>.csv` (Vorschläge und Hinweise je Item).
+
+**Ergebnis 21.11.2026 (Q183):** 3.279 Items tragen eine GND aus der Tabelle. Vorschläge:
+8 Labels, 253 Beschreibungen, 4.934 Aliase an 1.893 Items. 195 Hinweise: 178 × „P31 ist kein
+Museum/Bibliothek/Archiv“, 17 × GND an mehreren Items.
+
 ## Städte: Europeana-Orte ↔ Wikidata (P7704)
 
 Europeana führt auch Orte (`http://data.europeana.eu/place/<n>`), deren `sameAs` auf
@@ -245,8 +558,8 @@ python -m glamsync cities --country Q183,Q40,Q39 --min-population 50000
 ## Personen: Europeana-Agents ↔ Wikidata (P7704, P227)
 
 ```bash
-python -m glamsync persons                 # alle ~170.000 Europeana-Agents
-python -m glamsync persons --no-gnd-check  # ohne lobid-Prüfung (dann keine P227-Vorschläge)
+python -m glamsync persons        # alle ~170.000 Europeana-Agents, nur P7704
+python -m glamsync persons --gnd  # zusätzlich P227: Items ohne GND suchen, über lobid prüfen (langsam)
 ```
 
 ### Konzept
@@ -286,6 +599,7 @@ python -m glamsync persons --no-gnd-check  # ohne lobid-Prüfung (dann keine P22
 | `kein_mensch` | Item ist kein Mensch (Organisation, Gruppe, fiktive Figur …) | Bericht |
 | `kein_treffer` | QID existiert nicht | Bericht |
 | `fehlt_ohne_objekte` | wie `fehlt_in_wikidata`, aber der Agent hat in Europeana 0 Objekte (`isAggregatedBy.recordCount`) | eigene QS-Datei, zunächst nicht einspielen |
+| `abgelehnt_in_wikidata` | derselbe Agent steht am Item schon mit Rang „veraltet“ (z. B. Vermischung, zurückgezogener Identifikator) | Bericht |
 
 Europeana-Dubletten (mehrere Agents → dieselbe QID) werden wie bei den Städten nach den
 meisten verknüpften Objekten (`isAggregatedBy.recordCount`) entschieden, bei Gleichstand
@@ -325,10 +639,15 @@ Alle Vorschläge haben die Fundstelle S248 Europeana (Q234110) + S813.
 - Europeana: rund 1.700 Seiten à 100, **fest sortiert** (`sort=id asc`). Ohne Sortierung
   liefert das Deep Paging Dubletten und lässt Agents aus (im ersten Lauf nur 131.165
   verschiedene von 170.053). Gecacht wird nur die kompakte Form (id, Label, QIDs, GND).
-- Wikidata: Der Bestand wird in neun Teilabfragen (nach erster Ziffer der Nummer) geladen;
-  Detaildaten werden nur für die Lücke und die P227-Kandidaten abgerufen. Ein voller Lauf
-  dauert wegen der Wikidata-Drosselung (HTTP 429) rund 1–2 Stunden; Wiederholungen
-  kommen aus dem Cache.
+- Wikidata: Der Bestand wird in Teilabfragen (Form mit/ohne `base`, je nach erster Ziffer der
+  Nummer) geladen; Detaildaten werden nur für die Lücke (und mit `--gnd` für die
+  P227-Kandidaten) abgerufen. Die P227-Suche ist seit 22.11.2026 standardmäßig aus: Sie ist
+  teuer und hat zuletzt keinen Vorschlag ergeben.
+- Wartezeit: Je Anfrage wird insgesamt höchstens 40 s auf einen Server gewartet
+  (`http.MAX_WAIT`, gilt für 429/5xx/Netzwerkfehler und Retry-After). Danach wird die Anfrage
+  übersprungen. Wo eine fehlende Antwort zu falschen Vorschlägen führen würde (Bestand aus
+  Wikidata), bricht der Lauf stattdessen ab; bei lobid und je Land im Städteabgleich wird nur
+  der eine Eintrag ausgelassen.
 - lobid: nur für die GND, die als P227 vorgeschlagen würden.
 
 ### Ergebnis (Lauf 19.11.2026)
@@ -360,7 +679,221 @@ Alle Vorschläge haben die Fundstelle S248 Europeana (Q234110) + S813.
 ```bash
 python -m explore.explore_ddb          # DDB: wo stehen ISIL und GND?
 python -m explore.explore_europeana    # Europeana: Umfang, sameAs-Abdeckung, ISIL?
+python -m explore.explore_gnd          # GND-Dump Körperschaften: Felder, Typen, Wikidata-Lage
 ```
+
+### GND-Dump Körperschaften (Stand 21.11.2026)
+
+**Bezug.** Die DNB stellt Gesamtabzüge unter <https://data.dnb.de/opendata/> bereit (CC0). Benötigt
+werden drei Dateien, die nicht ins Repository gehören (`data/` ist über `.gitignore` ausgeschlossen):
+
+```bash
+mkdir -p data/gnd && cd data/gnd
+D=https://data.dnb.de/opendata
+curl -O $D/authorities-gnd-koerperschaft_lds_20261013.jsonld.gz   # 211 MB, 1.583.228 Datensätze
+curl -O $D/authorities-gnd-sachbegriff_lds_20261013.jsonld.gz     #  25 MB, für den Körperschaftstyp
+curl -O $D/authorities-gnd-geografikum_lds_20261013.jsonld.gz     #  44 MB, für Ortsnamen
+```
+
+`GND_DUMP_PATH` (in `.env`) zeigt auf den Körperschafts-Dump. Die beiden anderen Dumps sucht das
+Tool im selben Ordner. Die Dateien ohne Datum (`…_lds.jsonld.gz`) sind stabile Links auf den
+jeweils aktuellen Stand. Der Abzug erscheint etwa zweimonatlich, der hier verwendete hat den
+Stand 13.10.2026.
+
+**Format.** Expandiertes JSON-LD als **ein einziges, eingerücktes JSON-Array** (`[ [ {…}, {…} ] ]`),
+nicht zeilenweise. Es besteht aus flachen Knoten, die nach `@id` sortiert sind:
+
+| Knoten | Anzahl | Inhalt |
+|---|---:|---|
+| `https://d-nb.info/gnd/<id>` | 1.583.228 | der Datensatz |
+| `https://d-nb.info/gnd/<id>/about` | 1.583.228 | Verwaltungsdaten (Erfasser als ZDB-ISIL-URI, Datum, Lizenz) |
+| `_:node…` (leere Knoten) | 26.996 | Beziehungen (Gründer, beteiligte Person …), stehen gesammelt am Dateianfang |
+
+Das Skript liest die Knoten einzeln mit `json.JSONDecoder.raw_decode` aus einem Puffer, nur mit der
+Standardbibliothek. Ein Durchlauf dauert rund 2,5 Minuten. Der Dump enthält keine defekten Knoten,
+der Parser würde sie aber überspringen und zählen.
+
+**Felder** (Prädikate im Namensraum `gndo:` = `https://d-nb.info/standards/elementset/gnd#`):
+
+| Feld | Quelle im Dump | alle 1.583.228 | DE Museum (4.560) | DE Bibliothek (3.356) | DE Archiv (1.882) |
+|---|---|---:|---:|---:|---:|
+| GND-ID | `gndo:gndIdentifier` (= Ende von `@id`, immer gültig) | 100 % | 100 % | 100 % | 100 % |
+| Name | `gndo:preferredNameForTheCorporateBody` | 100 % | 100 % | 100 % | 100 % |
+| Ort | `gndo:placeOfBusiness`: **nur GND-URI eines Geografikums**, Name aus dem Geografikum-Dump | 61,7 % | 99,7 % | 98,4 % | 97,9 % |
+| Land | `gndo:geographicAreaCode` (`XA-DE`, `XA-DE-BY`, `XA-AT`, `XA-CH`, `XA-DDDE` = DDR, `XA-DXDE` = Deutsches Reich …) | 93,3 % | 100 % | 100 % | 100 % |
+| Körperschaftstyp | `gndo:broaderTermInstantial` → Sachbegriff (siehe unten) | 20,0 % | 100 %¹ | 100 %¹ | 100 %¹ |
+| Sachgruppe | `gndo:gndSubjectCategory` (z. B. `6.7`, `6.8`) | 30,3 % | 90,5 % | 66,4 % | 88,8 % |
+| **ISIL** | **kommt nicht vor** | 0 | 0 | 0 | 0 |
+| Wikidata | `owl:sameAs` `http://www.wikidata.org/entity/Q…` (nie mehr als eine) | 4,5 % | 29,8 % | 9,4 % | 45,4 % |
+| VIAF | `owl:sameAs` `http://viaf.org/viaf/…` | 96,1 % | 96,6 % | 95,7 % | 96,0 % |
+| ISNI | `owl:sameAs` `https://isni.org/isni/…` (ohne Leerzeichen) | 16,0 % | 24,0 % | 10,3 % | 21,7 % |
+| aufgelöst | `gndo:dateOfTermination` | 7,8 % | 12,2 % | 22,0 % | 8,6 % |
+| Homepage | `gndo:homepage` | 16,5 % | 38,9 % | 16,8 % | 27,6 % |
+| übergeordnete Körperschaft | `gndo:hierarchicalSuperiorOfTheCorporateBody` | 27,4 % | 22,0 % | 39,7 % | 28,7 % |
+| alte GND-URIs | `dnb:deprecatedUri` (zusammengeführte Sätze) | 10,5 % | 44,2 % | 24,7 % | 35,0 % |
+
+¹ Die Teilmengen sind über diesen Oberbegriff definiert.
+
+Fehlende bzw. nicht direkt vorhandene Felder:
+
+- **ISIL:** Weder ein Prädikat noch ein Wert. Die ZDB-Organisations-URIs (`…/organisations/DE-1`)
+  stehen nur im `/about`-Knoten und bezeichnen die **erfassende** Einrichtung. ISIL-förmige
+  Literale (1.150) sind Namensteile wie `DG-Bank`. Auch lobid-gnd hat kein ISIL-Feld. Ob der
+  MARC-Datensatz eine ISIL enthält, ließ sich nicht prüfen: Die DNB bietet keine MARC-Dumps mehr
+  an, und die SRU-Schnittstelle antwortet mit HTTP 403.
+- **Ortsname:** Der Dump enthält nur die GND-URI des Ortes. Alle Orte der Teilmengen lassen sich
+  über den Geografikum-Dump auflösen (100 %).
+- **Körperschaftstyp:** `@type` unterscheidet nur grob (`CorporateBody` 81 %, `OrganOfCorporateBody`,
+  `Company`, `MusicalCorporateBody` …), Museum, Bibliothek und Archiv kommen darin nicht vor.
+
+**Körperschaftstyp Museum/Bibliothek/Archiv.** Er ergibt sich über den Oberbegriff
+(`broaderTermInstantial`), der auf einen Sachbegriff zeigt. Dessen Hierarchie
+(`broaderTermGeneral`/`broaderTermGeneric`) führt zu einer der drei Wurzeln, die per exaktem Namen
+im Sachbegriff-Dump gefunden werden: **Museum 4040795-0** (83 Sachbegriffe mit Unterbegriffen),
+**Bibliothek 4006439-6** (84) und **Archiv 4002859-8** (50). Kein Sachbegriff liegt unter
+mehreren Wurzeln. 180 Körperschaften haben Oberbegriffe aus mehreren Wurzeln, z. B.
+„Stadtbibliothek Bielefeld“ (Bibliothek + Archiv).
+
+| | DE | AT | CH | alle Länder |
+|---|---:|---:|---:|---:|
+| Museum | 4.560 | 738 | 603 | 13.156 |
+| Bibliothek | 3.356 | 272 | 220 | 7.758 |
+| Archiv | 1.882 | 223 | 145 | 3.926 |
+| davon mit Wikidata-Link (AT/CH) | | 218 | 228 | |
+
+Häufigste Oberbegriffe in DE: Museum (Museum 924, Heimatmuseum 857, Kunstmuseum 787, Technisches
+Museum 291), Bibliothek (Leihbücherei 780, Öffentliche Bibliothek 633, Spezialbibliothek 241,
+Klosterbibliothek 214), Archiv (Stadtarchiv 817, Archiv 256, Staatsarchiv 158, Kreisarchiv 104).
+
+Gegenprobe DE: Die Sachgruppen 6.7 „Bibliothek. Information und Dokumentation“ und 6.8
+„Archiv. Museum“ umfassen 9.758 Körperschaften, davon 7.515 auch über die Hierarchie. Der Rest
+sind überwiegend Fördervereine, Verbände, Gedenkstätten und „Sammlung“ (146), außerdem 1.165 ohne
+Oberbegriff. Über den Namen (museum|bibliothek|bücherei|archiv) kommen 17.468 Treffer zusammen,
+davon nur 7.406 auch über die Hierarchie. Die übrigen sind vor allem Untereinheiten und Vereine,
+etwa „Kreisverein für das Museum in Rendsburg“. Es gibt aber auch echte Einrichtungen ohne
+Oberbegriff, z. B. „Universitätsarchiv (Tübingen)“. Der Typfilter über die Hierarchie ist daher
+streng, verliert aber einen Teil der Einrichtungen.
+
+**Wikidata-Lage (SPARQL, 21.11.2026).**
+
+- **Fundstelle für P227:** `wd:P227 wdt:P9073` (anwendbarer „angegeben in“-Wert) =
+  **Q36578 „Gemeinsame Normdatei“**. P1629 verweist dagegen auf Q54506313 „GND-Kennung“, also nicht
+  auf die Datenbank. An P227 von Museen/Bibliotheken/Archiven in DE ist Q36578 die
+  zweithäufigste S248-Angabe (82). Am häufigsten ist VIAF (336).
+- **Alle 2.506 DE-Einrichtungen mit Wikidata-Link** (2.471 verschiedene QIDs, d. h. 35 QIDs
+  tragen mehrere GND-Sätze) wurden geprüft:
+
+  | Lage in Wikidata | Anzahl |
+  |---|---:|
+  | P227 identisch | 2.468 |
+  | P227 fehlt | 2 (beide GND hängen schon an einem anderen Item → `mehrdeutig`) |
+  | P227 anderer Wert | 1 (Q19963734 → `konflikt`) |
+
+  **Die Wikidata-Links der GND sind Rückverweise auf vorhandene P227-Aussagen.** Fall 1 („GND
+  nennt QID, P227 fehlt“) liefert deshalb für Deutschland keinen einzigen sicheren Vorschlag.
+  Bei den Europeana-Personen war das ebenso.
+
+**Mix'n'match-Import** (<https://meta.wikimedia.org/wiki/Mix%27n%27match/Import>, Stand 17.03.2026):
+CSV oder TSV mit **genau einer Kopfzeile**. Die Spaltennamen werden ohne Beachtung der
+Groß-/Kleinschreibung erkannt, eine Reihenfolge ist nicht vorgeschrieben.
+
+| Spalte | Bedeutung |
+|---|---|
+| `id` | Pflicht: ID im Katalog (hier GND-ID) |
+| `name` | Pflicht |
+| `desc` / `description` | höchstens 255 Zeichen |
+| `url` | optional, sonst aus dem Formatter (P1630) der Property + `id` |
+| `type` | `Q…`, überschreibt den Standardtyp des Katalogs je Zeile (z. B. Q33506 Museum) |
+| `born`, `died` | `YYYY`, `YYYY-MM` oder `YYYY-MM-DD` |
+| `autoq` / `q` | `Q…` als automatische bzw. manuelle Zuordnung |
+| `P…` | Property-Wert (Text oder Item; `P625` als `lat/lon`) |
+
+Andere Spalten werden ignoriert. Aliasse sind nicht vorgesehen. „Test“ verarbeitet bis zu
+1.000 Zeilen, ohne etwas zu ändern.
+
+#### Zeitraum, Umlenkungen und Löschungen (erkundet 22.11.2026)
+
+**Stand der Dateien.** Körperschafts-Dump 13.10.2026 (Dateiname; die jüngsten
+`dcterms:modified` im Dump stammen aus Oktober 2026). Umlenkungs-/Löschdatei
+`authorities-gnd_umlenk_loesch_20261113.jsonld.gz` (Stand 13.11.2026, 8,5 MB), also einen Monat
+jünger. Auf <https://data.dnb.de/opendata/> gibt es dazu den stabilen Link
+`authorities-gnd_umlenk_loesch.jsonld.gz`.
+
+**Zeitangaben im Dump.** Es gibt vier Felder, alle als einfache Literale ohne Datentyp:
+
+| Feld (`gndo:`) | Sätze (alle Körperschaften) | Formate |
+|---|---:|---|
+| `dateOfEstablishment` | 341.387 | `1606` (289.144), `15.09.1883` (42.318), `XX.05.1952`/`XX.XX.1902` (13.251), `192X`/`19XX` (1.098), drei- und weniger stellige Jahre (`529`), vereinzelt `13. Jh.` |
+| `dateOfTermination` | 123.737 | wie oben; vereinzelt `1984,20.Nov.`, `1944-45` |
+| `dateOfEstablishmentAndTermination` | 9.958 | Freitext: `ca. 1972-2002`, `ca. 1550-`, `ca. 1820 - vor 1897`, `16XX`, `19. Jh.`, `2. H. 19. Jh.`, `1939/40`, oft nur ein Jahr (`1975`), bei dem offen bleibt, ob Beginn oder Ende |
+| `associatedDate` | 78 | Freitext, selten |
+
+- Einige Sätze haben mehrere Werte, bei den 24.642 Einrichtungen der Tabelle 123 Sätze (z. B.
+  Beginn `1619` und `1962` bei Neugründung).
+- Ein Aktiv-Kennzeichen gibt es nicht. Ein fehlendes Ende beweist nicht, dass die Einrichtung
+  besteht.
+- Beispiel Gottorfer Hofbibliothek (`7659780-5`): `dateOfEstablishment` `1606`,
+  `dateOfTermination` `1749`. Den Freitext dazu enthält `biographicalOrHistoricalInformation`.
+- Die Tabelle speicherte bisher nur den ersten Wert von Beginn und Ende als Text; das kombinierte
+  Feld fehlte.
+
+**Einrichtungen der Tabelle (Museen, Bibliotheken, Archive):**
+
+| Land | Einrichtungen | mit Beginn | abgeschlossen | Ende als genaues Jahr | nur kombiniertes Feld |
+|---|---:|---:|---:|---:|---:|
+| DE | 9.710 | 3.852 | 1.449 | 1.397 | 69 |
+| DDR | 61 | 13 | 12 | 12 | 0 |
+| DR | 486 | 237 | 151 | 142 | 17 |
+| AT | 1.219 | 431 | 171 | 162 | 2 |
+| CH | 963 | 433 | 130 | 128 | 4 |
+
+„Abgeschlossen“ heißt: `dateOfTermination` vorhanden oder ein Bereich mit Ende im kombinierten
+Feld. Die Zahlen für DE weichen leicht von früheren ab (9.788), weil Einrichtungen mit mehreren
+Ländercodes hier nur einmal zählen.
+
+**Ende heißt oft Umbenennung, nicht Auflösung.** Die GND legt bei Umbenennung oder Umbildung
+einen **neuen Satz** an und beendet den alten. Der neue Satz verweist mit
+`gndo:precedingCorporateBody` auf den alten; ein Feld für den Nachfolger gibt es im Dump nicht.
+Von 1.913 abgeschlossenen Einrichtungen (DE, DDR, DR, AT, CH) haben **1.083 einen Nachfolger in
+der Tabelle**. Echte Auflösungen wie die Gottorfer Hofbibliothek (kein Nachfolger) sind die
+Minderheit. Entsprechend beginnt ein Nachfolgesatz oft erst mit dem neuen Namen. Das GND-Gründungsjahr
+weicht deshalb bei 872 der Items mit P227 von P571 ab, z. B. Q449280 (P571 1779, GND 2001).
+
+**Abgleich mit Wikidata (live, Items mit P227 aus der Tabelle, 6.719 Items):**
+
+| Befund | Items |
+|---|---:|
+| GND abgeschlossen (DE, DDR, DR, AT, CH) | 328 |
+| davon P576 (Auflösungsdatum) vorhanden | 65 |
+| davon P576 fehlt | 280 (Nachfolger in der GND: 197; ohne Nachfolger: 83) |
+| GND offen, aber P576 in Wikidata | 64 |
+| Ende als genaues Jahr weicht von P576 ab | 22 |
+| Beginn als genaues Jahr weicht von P571 ab | 872 (meist Umbenennung, siehe oben) |
+| Beginn als genaues Jahr, P571 fehlt | 1.028 |
+
+**Umlenkungs-/Löschdatei.** Es handelt sich um JSON-LD als Array, meist ein Objekt je Zeile.
+Gelöschte Sätze stehen aber teils mit dem nächsten Objekt in derselben Zeile; die Datei muss daher
+wie der Dump mit `raw_decode` gelesen werden.
+
+| Art | Anzahl | Aufbau |
+|---|---:|---|
+| Umlenkung | 611.719 | `@id` alte GND, `owl:sameAs` und `dnb:canonicalUri` (gleicher Wert) = neue GND |
+| Löschung | 32.287 | `@id` alte GND, `@type` `dnb:DeletedResource`, kein Ziel |
+
+- Die Datei enthält keinen Entitätstyp, kein Datum und keine Art der Umlenkung.
+- Jede Umlenkung hat **genau ein Ziel**. Aufspaltungen kommen nicht vor.
+- 6.021 Umlenkungen zeigen auf ein Ziel, das selbst umgelenkt ist. Es gibt also Ketten, und das
+  Endziel muss aufgelöst werden. 172 Ziele sind gelöscht.
+- Gegen den Dump: Die alten IDs aus `dnb:deprecatedUri` (15.751 bei der Tabelle) stehen fast alle
+  (15.748) auch in der Datei. **6 GND der Tabelle** sind nach dem Dump-Stand umgelenkt worden,
+  keine gelöscht.
+
+**P227 in Wikidata auf alte IDs** (live, alte IDs mit Endziel in der Tabelle, 15.764 Werte):
+
+- 54 Aussagen an 53 Items.
+- 50 davon sind schon `deprecated`, mit Qualifikator, und die neue GND steht am selben Item.
+- **4 Aussagen mit normalem Rang:** Das ist der eigentliche Korrekturbestand.
+- Auf gelöschte IDs zeigt keine P227 mit bestem Rang.
 
 ### DDB (Stand 15.11.2026)
 
@@ -399,6 +932,32 @@ User-API eine Authentifizierung (Bearer/JWT); `/version/test-auth` liefert ohne 
 - `sameAs` enthält auch **alte, lange Europeana-IDs** (`organization/1482250000…`); solche
   P7704-Werte werden als veraltet gemeldet.
 
+### Denkmalatlas Niedersachsen (Stand 25.11.2026, nicht weiterverfolgt)
+
+Geprüft wurde, ob sich für Denkmäler P7900, P625, P131, P6375 und P31 aus dem
+[Denkmalatlas](https://denkmalatlas.niedersachsen.de/viewer/) des NLD ergänzen lassen. Das
+Erkundungsskript wurde danach wieder entfernt, weil der Nutzen zu klein war.
+
+- **Schnittstellen** (Goobi viewer, ohne Schlüssel):
+  - OAI-PMH `…/viewer/oai`: nur `oai_dc` mit eigenen Feldern, 122.896 Datensätze, 100 je Seite.
+    Abfrage nur ohne `set`, denn die Sets sind leer.
+  - Vollständiger Datensatz als DenkXweb-XML über `…/viewer/metsresolver?id=<uuid>`.
+  - IIIF-Manifest unter `…/viewer/rest/iiif/manifests/<uuid>/manifest/`.
+  - Koordinaten in EPSG:25832.
+- **Lizenz:** Laut Nutzungsbedingungen stehen die Metadaten unter CC0 1.0. Bilder und Texte
+  (Beschreibung, Denkmalbegründung) stehen unter CC BY-SA 4.0. Das Feld `<licence>` im
+  DenkXweb-Datensatz nennt trotzdem CC BY-SA 4.0; vor einem Import wäre das beim NLD zu klären.
+- **P7900:** Die Property enthält die ADABweb-ID (Format `[0-9]+`). Rund 26 % der Datensätze haben
+  keine ADABweb-ID. 9.768 Items haben P7900, das sind nur rund 4 % der Datensätze mit
+  ADABweb-ID. In Wikidata stehen 78 Werte an mehreren Items, 27 Werte haben eine falsche Form.
+- **Stichprobe von 100 Items mit P7900:**
+  - P625 fehlt bei 4 %. Vorhandene Koordinaten weichen im Median 4 m ab.
+  - P131 und P31 sind fast immer vorhanden.
+  - Nur die Adresse (P6375) fehlt häufiger: bei 43 %.
+- **Grund für den Abbruch:** Bei den vorhandenen Items gibt es kaum etwas zu ergänzen. Neue Items
+  für über 100.000 Denkmäler wären ein eigenes Bot-Vorhaben. Bei Bodendenkmälern wären exakte
+  Koordinaten zudem heikel.
+
 ### Folgerungen
 
 1. **Europeana → Wikidata:** über `sameAs`-QID, sonst GND.
@@ -428,12 +987,15 @@ User-API eine Authentifizierung (Bearer/JWT); `/version/test-auth` liefert ohne 
 glamsync/
   config.py, http.py        # Konfiguration, HTTP-Client mit Cache, Drosselung und Retry
   sources/                  # wikidata.py, europeana.py, ddb.py, places.py (Europeana-Orte),
-                            # agents.py (Europeana-Personen), gnd.py (lobid-Prüfung),
+                            # agents.py (Europeana-Personen), gnd.py (lobid-Prüfung, GND-Dump),
+                            # gnd_redirects.py (GND-Umlenkungen/-Löschungen),
                             # registry.py (ISIL-Verzeichnis, Museen in Österreich)
   normalize.py              # ID-Formate
   match.py                  # Zuordnung und Klassifikation (ohne Netz, getestet)
   registry.py               # Registerabgleich über Name + Website (ohne Netz, getestet)
   persons.py                # Personenabgleich Europeana-Agents (ohne Netz, getestet)
+  gnd.py                    # GND-Körperschaften: Name + Ort, Zeitraum, Umlenkungen, Mix'n'match,
+                            # Bezeichnungen (ohne Netz, getestet)
   pipeline.py               # Ablauf fetch / compare / export-qs
   export.py, __main__.py    # Ausgabe, CLI
 explore/                    # Erkundungsskripte
@@ -444,3 +1006,39 @@ openapi.yaml                # OpenAPI-Spezifikation der DDB-API
 ## Lizenz
 
 Apache License 2.0, siehe [LICENSE](LICENSE).
+
+## Anreicherung aus der GND (P214, P213, P571, P131, P31)
+
+```bash
+python -m glamsync enrich --source gnd --country Q183   # bzw. Q40, Q39
+```
+
+Für Pool-Items (Museum/Bibliothek/Archiv des Landes) mit genau einer GND aus der Tabelle; die
+Aussagen werden live über die Wikidata-API gelesen. Ergänzt wird nur, was fehlt; Quelle S248 GND
+(Q36578) + S813.
+
+| Property | Regel | Ausgabe |
+|---|---|---|
+| P214 VIAF / P213 ISNI | Wert aus dem GND-Satz; steht er schon an einem anderen Item → nur Bericht | `qs_P214_gnd_<land>_neu_…`, `qs_P213_…` |
+| P571 Gründung | nur genaues Jahr (Genauigkeit Jahr) | `qs_P571_…` |
+| P131 Ort | genau ein GND-Ort mit QID; nennt der Name einen Ortsteil dieses Ortes, aber nicht den Ort selbst → nur Bericht | `qs_P131_…` |
+| P31 Art | erster GND-Oberbegriff mit freigegebener Klasse ersetzt Museum/Bibliothek/Archiv; die allgemeine Aussage wird nur ohne Fundstellen/Qualifikatoren entfernt; gemischte P31 (z. B. Gebäude + Museum) bleiben | `qs_P31_gnd_<land>_ersetzen_…` |
+
+Zuordnung Oberbegriff → Klasse: `data/gnd_oberbegriff_p31.csv` (Spalte `freigegeben` = `ja`).
+Neue Oberbegriffe werden bei jedem Lauf ergänzt (Suche über das deutsche Label, auch klein
+geschrieben; nur Unterklassen von Museum/Bibliothek/Archiv). Bericht aller Vorschläge:
+`out/anreicherung_gnd_<land>_<datum>.csv`.
+
+### ISIL Schweiz und Österreich
+
+- **Schweiz (`registry --source isil --country Q39`):** Quelle ist das vollständige Schweizer
+  ISIL-Verzeichnis der Nationalbibliothek (opendata.swiss, CSV, ~1.900 aktive von ~2.500 Einträgen;
+  Namen in allen Landessprachen, Ort, Website). Fundstelle S854 auf die Datensatz-Seite. Inaktive
+  ISIL gelten bei der Bereinigung als gültig (eine ISIL bleibt gültig, auch wenn die Einrichtung
+  geschlossen ist) – Löschvorschläge nur für Werte, die das Verzeichnis gar nicht kennt.
+- **Österreich (`--country Q40`):** Die Berliner ISIL-Datenbank führt nur ~110 AT-ISIL; ein
+  offenes Gesamtverzeichnis gibt es nicht. Deshalb keine Löschvorschläge (nur Bericht).
+- **`kandidat_sicher`** (zusätzlich zu `kandidat_stark`): genau ein Item am Registerort (P131/P276/P159,
+  Ortsnamen de/fr/it/rm/en) ohne ISIL, dessen Label einem Registernamen sehr ähnlich ist (≥ 0,95,
+  kompakt, Ortsname darf fehlen). Bei Berliner Datensätzen zählt nur der volle Name, nicht die
+  Kurzform (die lässt Zusätze wie „…, Bibliothek“ weg). → `qs_P791_isil_<land>_neu_…`

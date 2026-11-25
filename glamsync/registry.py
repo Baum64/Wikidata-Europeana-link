@@ -34,7 +34,9 @@ STARK = "kandidat_stark"
 KONFLIKT = "konflikt"
 SCHWACH = "kandidat_schwach"
 KEIN_TREFFER = "kein_treffer"
-STATUSES = [VORHANDEN, VORHANDEN_PRUEFEN, STARK, SCHWACH, KONFLIKT, MEHRDEUTIG, KEIN_TREFFER]
+SICHER = "kandidat_sicher"  # Ort gleich, Label sehr ähnlich (wie beim GND-Abgleich) → QuickStatement
+STATUSES = [VORHANDEN, VORHANDEN_PRUEFEN, SICHER, STARK, SCHWACH, KONFLIKT, MEHRDEUTIG, KEIN_TREFFER]
+SURE_LABEL_RATIO = 0.95
 
 WEAK_NAME_RATIO = 0.85
 NEAR_KM = 1.0
@@ -221,6 +223,47 @@ def classify_registry(
     return out
 
 
+def mark_sure(matches: list[RegistryMatch], pool: Pool, locations: dict[str, list[tuple[str, str]]],
+              item_values: dict[str, list[str]], prop: str) -> int:
+    """Einträge ohne starken Kandidaten: genau EIN Item am selben Ort (Ortsname = Item-Ort P131/P276/P159),
+    ohne Wert dieser Property, dessen Label einem Registernamen sehr ähnlich ist (≥ SURE_LABEL_RATIO,
+    kompakt, Ortsname darf fehlen; Aliase zählen nicht) → SICHER. Zielen mehrere Einträge auf dasselbe
+    Item, bleibt es bei den bisherigen Status."""
+    from .gnd import names_similarity
+
+    by_place: dict[str, set[str]] = defaultdict(set)
+    for q, locs in locations.items():
+        for _, label in locs:
+            if norm_name(label):
+                by_place[norm_name(label)].add(q)
+    chosen: dict[str, list[tuple[RegistryMatch, float]]] = defaultdict(list)
+    for m in matches:
+        if m.status not in (SCHWACH, KEIN_TREFFER) or not m.record.city:
+            continue
+        city = norm_name(m.record.city)
+        ok = []
+        for q in by_place.get(city, set()):
+            it = pool.items.get(q)
+            if it is None or item_values.get(q):
+                continue
+            # Schweizer Verzeichnis: alt_names sind Übersetzungen (gleichwertig); Berlin: Kurzformen, die
+            # Zusätze wie „…, Bibliothek“ weglassen → ISIL einer Teilbibliothek landete sonst am Museum
+            names = [m.record.name, *(m.record.alt_names if m.record.source == "isil_ch" else [])]
+            r = names_similarity(names, [m.record.city], it)
+            if r >= SURE_LABEL_RATIO:
+                ok.append((q, r))
+        if len(ok) == 1:
+            chosen[ok[0][0]].append((m, ok[0][1]))
+    n = 0
+    for q, ms in chosen.items():
+        if len(ms) == 1:
+            m, r = ms[0]
+            m.status, m.qids, m.score = SICHER, [q], round(r, 3)
+            m.note = f"Label sehr ähnlich ({r:.2f}), Ort gleich ({m.record.city}) → QuickStatement"
+            n += 1
+    return n
+
+
 UNGUELTIG = "ungueltig"
 NICHT_IM_REGISTER = "nicht_im_register"
 
@@ -237,7 +280,8 @@ class Cleanup:
 
 
 def registry_cleanup(
-    statements: list[dict], registry_keys: set[str], prop: str, prefix: str | None = None
+    statements: list[dict], registry_keys: set[str], prop: str, prefix: str | None = None,
+    complete: bool = True,
 ) -> list[Cleanup]:
     """Ungültige Werte und Werte, die im Register fehlen → Löschvorschläge.
 
@@ -256,6 +300,9 @@ def registry_cleanup(
             kind, note = UNGUELTIG, "ungültiges Format"
         elif compare_key(prop, norm) not in registry_keys:
             kind, note = NICHT_IM_REGISTER, "nicht im Register (aufgelöst, Tippfehler oder anderes Register?)"
+            if not complete:  # Register unvollständig (z. B. AT-ISIL in Berlin) → nie löschen
+                out.append(Cleanup(s["qid"], v, kind, None, note + "; Register unvollständig – nur Bericht"))
+                continue
         else:
             continue
         if s.get("has_refs") or s.get("has_qualifiers"):

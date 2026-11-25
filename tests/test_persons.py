@@ -130,3 +130,14 @@ def test_mark_without_objects():
     assert mark_without_objects([a, b, c], {"1": 5, "2": 0, "3": 0}) == 1
     assert (a.status, b.status, c.status) == (FEHLT, OHNE_OBJEKTE, IDENTISCH)
     assert b.action == "new" and "0 verknüpfte Objekte" in b.note
+
+
+def test_mark_deprecated():
+    from glamsync.models import FEHLT, Finding
+    from glamsync.persons import ABGELEHNT, mark_deprecated
+
+    a = Finding("P7704", FEHLT, "Q1", "europeana", "1", "agent/1", [], action="new")
+    b = Finding("P7704", FEHLT, "Q2", "europeana", "2", "agent/2", [], action="new")
+    # Q1 führt agent/base/1 als veraltet (normalisiert agent/1) → kein Vorschlag
+    assert mark_deprecated([a, b], {"Q1": {"agent/1"}, "Q3": {"agent/2"}}) == 1
+    assert (a.status, a.action, b.status, b.action) == (ABGELEHNT, None, FEHLT, "new")

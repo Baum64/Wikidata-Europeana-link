@@ -26,6 +26,7 @@ from .normalize import normalize_p7704
 KEIN_MENSCH = "kein_mensch"
 GND_PROBLEM = "gnd_problem"
 OHNE_OBJEKTE = "fehlt_ohne_objekte"  # Agent/Ort ohne verknüpfte Objekte in Europeana – eigene QS-Datei
+ABGELEHNT = "abgelehnt_in_wikidata"  # derselbe Wert steht am Item mit Rang „veraltet“ – nur Bericht
 HUMAN = "Q5"
 
 
@@ -134,6 +135,20 @@ def person_gnd(
         return f
     f.status, f.action = FEHLT, "new"
     return f
+
+
+def mark_deprecated(findings: list[Finding], deprecated: dict[str, set[str]]) -> int:
+    """Neu-Vorschläge zurückhalten, deren Wert am Item bereits als veraltet markiert ist.
+
+    `deprecated` = QID → normalisierte Werte mit Rang „veraltet“. Sonst würde eine bewusste
+    Ablehnung (z. B. „Vermischung“) über die Form ohne 'base' wieder eingetragen.
+    """
+    n = 0
+    for f in findings:
+        if f.prop == "P7704" and f.action == "new" and f.source_value in deprecated.get(f.qid, ()):
+            f.status, f.action, n = ABGELEHNT, None, n + 1
+            f.note = _join(f.note, f"{f.source_value} steht in Wikidata mit Rang „veraltet“")
+    return n
 
 
 def mark_without_objects(findings: list[Finding], counts: dict[str, int]) -> int:

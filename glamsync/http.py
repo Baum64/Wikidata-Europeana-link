@@ -3,7 +3,9 @@
 - Jede erfolgreiche Antwort wird als JSON-Datei unter cache/<host>/<hash>.json
   abgelegt. Der Hash wird aus Methode, URL, Parametern und Body gebildet –
   ohne geheime Parameter (wskey usw.), damit Schlüssel nie auf der Platte landen.
-- HTTP 429 und 503: Retry-After wird respektiert, sonst exponentielles Backoff.
+- HTTP 429/502/503/504 und Netzwerkfehler: Retry-After wird respektiert, sonst exponentielles
+  Backoff – insgesamt aber höchstens MAX_WAIT Sekunden je Anfrage; danach wird sie mit
+  SkippedRequest abgebrochen (der Aufrufer überspringt sie oder bricht den Lauf ab).
 - Pro Host wird ein Mindestabstand zwischen Anfragen eingehalten.
 """
 
@@ -34,10 +36,28 @@ MIN_INTERVAL = {
 }
 
 
+# Höchstens so lange (Sekunden, Summe aller Pausen) wird je Anfrage auf einen Server gewartet
+MAX_WAIT = 40
+
+
+class SkippedRequest(requests.RequestException):
+    """Anfrage aufgegeben, weil der Server länger als MAX_WAIT Sekunden Pausen verlangt hätte."""
+
+
+def _wait(waited: float, delay: float, what: str) -> float:
+    """Wartet `delay` Sekunden, sofern das Budget MAX_WAIT reicht; sonst SkippedRequest."""
+    if waited + delay > MAX_WAIT:
+        raise SkippedRequest(f"{what}: übersprungen (verlangte Wartezeit {delay:g}s, Budget {MAX_WAIT}s)")
+    log.warning("%s, warte %ss", what, delay)
+    time.sleep(delay)
+    return waited + delay
+
+
 # Maximales Alter von Cache-Einträgen in Sekunden (None = unbegrenzt).
 # Wikidata ändert sich durch eigene QuickStatements laufend → kurze Lebensdauer,
 # sonst würden bereits eingespielte Vorschläge erneut erzeugt.
-MAX_AGE = {"query.wikidata.org": config.WIKIDATA_CACHE_HOURS * 3600}
+MAX_AGE = {"query.wikidata.org": config.WIKIDATA_CACHE_HOURS * 3600,
+           "www.wikidata.org": config.WIKIDATA_CACHE_HOURS * 3600}
 
 
 def cache_fresh(path, host: str) -> bool:
@@ -99,6 +119,7 @@ class CachedClient:
             return json.loads(path.read_text(encoding="utf-8"))["body"]
 
         hdrs = {"Accept": "application/json", **(headers or {})}
+        waited = 0.0
         for attempt in range(self.max_retries + 1):
             self._throttle(host)
             try:
@@ -109,15 +130,13 @@ class CachedClient:
                 if attempt >= self.max_retries:
                     raise
                 delay = 2**attempt
-                log.warning("Netzwerkfehler bei %s (%s), neuer Versuch in %ss", url, exc, delay)
-                time.sleep(delay)
+                waited = _wait(waited, delay, f"Netzwerkfehler bei {host} ({exc})")
                 continue
 
             if resp.status_code in (429, 502, 503, 504) and attempt < self.max_retries:
                 retry_after = resp.headers.get("Retry-After")
                 delay = int(retry_after) if retry_after and retry_after.isdigit() else 2 ** (attempt + 1)
-                log.warning("HTTP %s von %s, warte %ss", resp.status_code, host, delay)
-                time.sleep(delay)
+                waited = _wait(waited, delay, f"HTTP {resp.status_code} von {host}")
                 continue
             if resp.ok and attempt < self.max_retries:
                 # abgeschnittene Antwort (z. B. SPARQL-Timeout mitten im Stream) → neu versuchen
@@ -125,8 +144,7 @@ class CachedClient:
                     resp.json()
                 except ValueError:
                     delay = 2 ** (attempt + 1)
-                    log.warning("Unvollständige JSON-Antwort von %s, neuer Versuch in %ss", host, delay)
-                    time.sleep(delay)
+                    waited = _wait(waited, delay, f"unvollständige Antwort von {host}")
                     continue
             break
 
@@ -161,12 +179,13 @@ class CachedClient:
         host = urlsplit(url).netloc
         if self.use_cache and cache_fresh(path, host):
             return json.loads(path.read_text(encoding="utf-8"))["body"]
+        waited = 0.0
         for attempt in range(self.max_retries + 1):
             self._throttle(host)
             resp = self.session.get(url, params=params, allow_redirects=False, timeout=60,
                                     headers={"Accept": "application/json"})
             if resp.status_code in (429, 502, 503, 504) and attempt < self.max_retries:
-                time.sleep(2 ** (attempt + 1))
+                waited = _wait(waited, 2 ** (attempt + 1), f"HTTP {resp.status_code} von {host}")
                 continue
             break
         if resp.status_code >= 500 or resp.status_code in (401, 403, 429):
