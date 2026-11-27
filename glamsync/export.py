@@ -558,3 +558,59 @@ def write_terms_report(proposals, path: Path) -> None:
             if p.has_changes or p.note:
                 w.writerow([p.qid, "|".join(p.gnd), p.label_now, p.label, p.description_now, p.description,
                             " | ".join(p.aliases), p.note])
+
+
+# --- Organisationen: Europeana ↔ Wikidata europaweit -------------------------------
+ORG_STATUS_MEANING = {
+    "identisch": "Wikidata führt den Europeana-Wert",
+    "fehlt_in_wikidata": "Organisation, Name gleich, mit Objekten → `…_neu_…`",
+    "fehlt_ohne_objekte": "wie oben, aber 0 Objekte in Europeana → `…_ohne_objekte_…` (zunächst nicht einspielen)",
+    "name_pruefen": "sonst passend, aber kein Name gleich → `…_pruefen_…`, auskommentiert (Handprüfung)",
+    "kandidat_stark": "ohne sameAs: genau ein Item mit gleicher Website/Kennung UND gleichem Namen → `…_kandidaten_…`",
+    "kandidat_schwach": "ohne sameAs: Website/Kennung + ähnlicher Name, oder Domain + gleicher Name → auskommentiert",
+    "kein_organisation": "Item ist keine Organisation (Gebäude, Zeitschrift, Projekt …) oder ein Gebiet mit Einwohnerzahl – Bericht",
+    "konflikt": "Item führt einen anderen P7704-Wert – Bericht",
+    "mehrdeutig": "Dublette ohne Favorit, Wert an anderem Item, mehrere QIDs/Kandidaten – Bericht",
+    "abgelehnt_in_wikidata": "derselbe Wert steht am Item mit Rang „veraltet“ – Bericht",
+    "kein_treffer": "QID existiert nicht bzw. kein Kandidat",
+}
+
+
+def write_org_report(rows: list[dict], path: Path) -> None:
+    cols = ["stufe", "land", "europeana_id", "europeana_label", "objekte", "homepage", "europeana_url", "qid",
+            "wikidata_label", "status", "vorschlag", "wikidata", "datei", "hinweis"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=cols, delimiter=";")
+        w.writeheader()
+        w.writerows(rows)
+
+
+def write_org_summary(s: dict, path: Path) -> None:
+    def table(title: str, counts: dict) -> list[str]:
+        out = ["", f"## {title}", "", "| Status | Anzahl | Bedeutung |", "|---|---:|---|"]
+        out += [f"| {k} | {v} | {ORG_STATUS_MEANING.get(k, '')} |" for k, v in counts.items()] or ["| – | 0 | |"]
+        return out
+
+    L = [
+        f"# Organisationen: Europeana ↔ Wikidata ({s['date']})",
+        "",
+        f"- Europeana-Organisationen: **{s['orgs']}**, davon mit Wikidata-sameAs {s['with_qid']} "
+        f"({s['multi_qid']} mit mehreren QIDs), ohne sameAs {s['no_qid']}",
+        f"- vorhandene `organisation/…`-Werte in Wikidata: {s['wikidata_values']}",
+        "- Fundstelle aller Vorschläge: S248 Europeana (Q234110) + S813 Abrufdatum.",
+        f"- Stufe 2 (Website/Kennung): {'durchsucht ' + str(s['no_qid_searched']) + ' Organisationen, Kandidaten für ' + str(s['with_candidates']) if s['candidates'] else 'nicht ausgeführt (--no-candidates)'}",
+        f"- Klassenprüfung Organisation: {s['classes']} Klassen in `data/klassen_organisation.json`",
+    ]
+    L += table("Stufe 1: sameAs → QID", s["stage1"])
+    L += table("Stufe 2: ohne sameAs", s["stage2"])
+    L += ["", "## Formatprüfung vorhandener Werte", "", "| Befund/Aktion | Anzahl |", "|---|---:|"]
+    L += [f"| {k} | {v} |" for k, v in s["wikidata"].items()] or ["| – | 0 |"]
+    sts = ["fehlt_in_wikidata", "fehlt_ohne_objekte", "name_pruefen", "kandidat_stark", "kandidat_schwach"]
+    L += ["", "## Vorschläge nach Land", "", "| Land | " + " | ".join(sts) + " |", "|---|" + "---:|" * len(sts)]
+    L += [f"| {land} | " + " | ".join(str(c.get(x, 0)) for x in sts) + " |" for land, c in s["by_country"].items()]
+    L += ["", "## QuickStatements", ""] + ([f"- `{f}`" for f in s["files"]] or ["- keine"])
+    L += ["", "Mit `#` beginnende Zeilen (`…_pruefen_…`, schwache Kandidaten) sind auskommentiert: geprüfte",
+          "Befehlszeilen entkommentieren, dann alle übrigen `#`-Zeilen entfernen (`grep -v '^#'`) und erst",
+          "danach einspielen. QuickStatements dokumentiert `#`-Zeilen im V1-Format nicht als Kommentar."]
+    path.write_text("\n".join(L) + "\n", encoding="utf-8")

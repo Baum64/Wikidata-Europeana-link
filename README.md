@@ -123,7 +123,8 @@ gibt; dann wird Europeana als Fundstelle gesetzt.
 gehören, Werte ohne Präfix, `DE-MUS` ohne Nummer) werden **zur Löschung vorgeschlagen**
 (`qs_<P>_loeschen_<datum>_partNN.txt`, Aktion `delete`), sofern die Aussage weder
 Quellen noch Qualifier hat; sonst nur Bericht. Objekt-IDs ggf. vorher nach P727 übertragen.
-Dubletten (ein P7704-Wert an mehreren Items) erscheinen nur im Bericht.
+Dubletten (ein P7704-Wert an mehreren Items) erscheinen nur im Bericht; für sie gibt es auch
+keine Formatkorrektur.
 
 ## Register ohne Wikidata-Verknüpfung (ISIL-Verzeichnis, Museen in Österreich)
 
@@ -674,6 +675,116 @@ Alle Vorschläge haben die Fundstelle S248 Europeana (Q234110) + S813.
 - In 194 Vorschlägen hat das Wikidata-Item kein deutsches/englisches Label; die Zuordnung
   beruht wie alle anderen auf sameAs.
 
+## Organisationen europaweit: Europeana ↔ Wikidata (P7704)
+
+```bash
+python -m glamsync organisations                  # Stufe 1 (sameAs) + Stufe 2 (Website/Kennung)
+python -m glamsync organisations --no-candidates  # nur Stufe 1
+```
+
+`compare` arbeitet je Land (englisches Länderlabel, Grundmenge Museum/Bibliothek/Archiv, DDB).
+Dabei fehlen Organisationen ohne Land (156), und „Netherlands“/„Kingdom of the Netherlands“ bzw.
+„Czechia“/„Czech Republic“ sind getrennte Länder. `organisations` gleicht deshalb **alle**
+Europeana-Organisationen ab, unabhängig vom Land und vom Typ, und nur mit Europeana als Quelle.
+
+**Stufe 1 – sameAs → QID** (Weiterleitungen aufgelöst), Befund je Item (P7704 ist einwertig):
+
+| Status | Regel | Ausgabe |
+|---|---|---|
+| `identisch` | Item führt einen der Werte (auch als `organization/…`) | – |
+| `konflikt` | Item führt einen anderen P7704-Wert, auch `agent/…` | Bericht |
+| `kein_treffer` | QID existiert nicht | Bericht |
+| `kein_organisation` | P31 liegt nicht unter Organisation (Q43229), z. B. Palast, Kirchengebäude, Zeitschrift; oder das Item hat eine Einwohnerzahl (P1082), ist also das Gebiet (Gemeinde, Region) und nicht die Verwaltung | Bericht |
+| `mehrdeutig` | Europeana-Dublette ohne Favorit (nach Objekten), Wert an anderem Item, mehrere QIDs | Bericht |
+| `abgelehnt_in_wikidata` | derselbe Wert steht am Item mit Rang „veraltet“ | Bericht |
+| `fehlt_in_wikidata` | Organisation, **ein Name gleich**, Objekte > 0 | `qs_P7704_organisationen_neu_…` |
+| `fehlt_ohne_objekte` | ebenso, aber 0 Objekte in Europeana | `…_ohne_objekte_…` (zunächst nicht einspielen) |
+| `name_pruefen` | sonst passend, aber **kein Name gleich** | `…_pruefen_…`, **auskommentiert** |
+
+„Name gleich“ heißt: nach Normalisierung (Kleinschreibung, ohne diakritische Zeichen und
+Satzzeichen, ß→ss, &→and) identisch. Verglichen werden alle Europeana-Namen (prefLabel aller
+Sprachen, altLabel, Akronyme) mit allen Labels und Aliassen des Items in allen Sprachen. Namen
+unter 4 Zeichen zählen nicht. Typische Fälle für `name_pruefen`: Europeana verknüpft eine
+Untereinheit mit der Mutter („SKD. Gemäldegalerie Alte Meister“ → SKD), ein Museum mit seinem
+Gebäude oder ganz falsch („American School of Classical Studies at Athens“ → Sardinien).
+
+**Stufe 2 – Organisationen ohne sameAs** (und ohne Wert in Wikidata). Gesucht wird über:
+
+- die **Website**: Europeana-`homepage` gegen P856, in allen Formen mit http/https, mit/ohne
+  `www.` und Schluss-Slash; außerdem nur die Domain (schwächer, oft die Mutter-Organisation);
+- die Kennungen **GND, VIAF, ISNI** aus dem sameAs.
+
+Kandidaten sind nur Organisationen (wie in Stufe 1, also auch ohne Einwohnerzahl), die nicht
+schon sameAs-Ziel einer anderen Europeana-Organisation sind.
+
+| Status | Regel | Ausgabe |
+|---|---|---|
+| `kandidat_stark` | genau ein Item mit gleicher Website bzw. Kennung **und** gleichem Namen | `…_kandidaten_…` |
+| `kandidat_schwach` | genau ein Item: Website/Kennung + ähnlicher Name (≥ 0,85) oder Domain + gleicher Name | `…_kandidaten_…`, **auskommentiert** |
+| `konflikt` | Kandidat führt schon einen anderen P7704-Wert (Europeana-Dublette?) | Bericht |
+| `mehrdeutig` | mehrere Kandidaten, oder ein Item ist Kandidat für mehrere Organisationen | Bericht |
+| `identisch` | Wikidata führt den Wert, Europeana hat keinen sameAs (Rückmeldung an Europeana) | Bericht |
+
+Kandidaten von Organisationen ohne Objekte stehen in `…_kandidaten_ohne_objekte_…`.
+
+**Auskommentierte Zeilen.** In `…_pruefen_…` und für schwache Kandidaten steht je Vorschlag eine
+Hinweiszeile und darunter der Befehl, beide mit `#`:
+
+```
+# organisation/5120 „Moldova Iași National Museum Complex - Art Museum“ ↔ Q18540862 „Muzeul de Artă Iași“ – kein Name gleich (Ähnlichkeit 0.39)
+#Q18540862|P7704|"organisation/5120"|S248|Q234110|S813|+2026-11-27T00:00:00Z/11
+```
+
+Geprüfte Befehle entkommentieren, dann die übrigen `#`-Zeilen entfernen und erst danach
+einspielen, z. B. `grep -v '^#' datei.txt > datei_geprueft.txt`. QuickStatements dokumentiert
+`#`-Zeilen im V1-Format nicht als Kommentar.
+
+**Formatprüfung.** Vorhandene Werte `organization/<n>` werden auf `organisation/<n>` korrigiert
+(`…_korrektur_…`, Löschen + Neu, siehe „Befunde zu Wikidata“), sofern die Aussage weder Quellen
+noch Qualifikatoren hat und die ID in der Europeana-Liste steht. Ungültige Werte ohne Quellen und
+Qualifikatoren kommen nach `…_loeschen_…`. Dubletten (ein Wert an mehreren Items) erscheinen nur im
+Bericht, auch ihre Korrektur (z. B. `organization/4648` an zwei Items „Bernhard-Heiliger-Stiftung“).
+
+**Klassenprüfung.** Ob eine Klasse unter Q43229 liegt, wird mit `P279*` in kleinen Paketen
+abgefragt, mit `hint:gearing "forward"` (rund 0,2 s je Klasse). Das Ergebnis speichert das Tool dauerhaft in
+`data/klassen_organisation.json`. Zum Erneuern die Datei löschen.
+
+**Drosselung.** Der Lauf stellt einige hundert SPARQL-Abfragen. Verlangt der Query-Service eine
+längere Pause (HTTP 429 mit Retry-After), wartet `organisations` sie ab (höchstens 300 s,
+zwei Wiederholungen). Eine fehlende Antwort könnte sonst einen Kandidaten fälschlich eindeutig
+machen. Die anderen Kommandos brechen weiterhin nach 40 s ab.
+
+**Ausgabe:** `out/organisationen_<datum>.csv` (eine Zeile je Befund, Spalte `datei` nennt die
+QS-Datei, `(#)` = auskommentiert), `out/organisationen_<datum>.md` (Zusammenfassung mit
+Tabelle nach Land), `out/qs_P7704_organisationen_{neu,ohne_objekte,pruefen,kandidaten,kandidaten_ohne_objekte,korrektur,loeschen}_<datum>_partNN.txt`.
+Fundstelle aller Vorschläge: S248 Europeana (Q234110) + S813.
+
+**Ergebnis 27.11.2026** (Europeana-Stand 21.11.2026: 5.587 Organisationen, 1.042 mit sameAs;
+296 `organisation/…`-Werte in Wikidata):
+
+| Stufe 1 (sameAs) | Anzahl | | Stufe 2 (ohne sameAs, 4.425 durchsucht) | Anzahl |
+|---|---:|---|---|---:|
+| fehlt_in_wikidata → `neu` | 504 | | kandidat_stark → `kandidaten` | 718 |
+| fehlt_ohne_objekte → `ohne_objekte` | 178 | | kandidat_stark → `kandidaten_ohne_objekte` | 186 |
+| name_pruefen → `pruefen` (#) | 138 | | kandidat_schwach (#), mit / ohne Objekte | 279 / 79 |
+| identisch | 165 | | identisch (Wert in Wikidata, Europeana ohne sameAs) | 119 |
+| kein_organisation | 43 | | mehrdeutig | 36 |
+| mehrdeutig / kein_treffer / konflikt | 8 / 4 / 1 | | kein_treffer | 3.128 |
+
+- **Formatprüfung:** 101 Korrekturen `organization/` → `organisation/` (`korrektur`), 10 Formatfehler
+  nur im Bericht, 1 Dublette (`organisation/4648`, 2 Items).
+- Deutschland und die Schweiz haben in Stufe 1 keine Lücke mehr (früherer `compare`-Lauf). In
+  Stufe 2 kommen für DE aber 81 starke Kandidaten hinzu. Die meisten Stufe-1-Vorschläge betreffen
+  Rumänien (59 + 56 zu prüfen), die USA, Schweden und die Niederlande.
+- Die übrigen Normdaten im Europeana-sameAs (LoC, BnF, IdRef, ULAN, BIBSYS, GeoNames, Freebase)
+  stehen bei allen zugeordneten Items schon in Wikidata; Europeana hat sie offenbar von dort
+  übernommen. VIAF und ISNI fehlen nur vereinzelt (14 bzw. 3) und werden nicht vorgeschlagen.
+- Stichproben: Die Stufe-1-Vorschläge und die starken Kandidaten waren plausibel. Unter den
+  schwachen Kandidaten sind viele Untereinheiten, die auf die Mutter zeigen (z. B. „Biological
+  Museum, Lund University“ → Universität Lund). Sie sind deshalb auskommentiert.
+- Gebiete statt Verwaltungen (Venetien, Nordholland, Gemeinde Ommen …) fielen erst über die
+  Einwohnerzahl auf, denn Gemeinden liegen in Wikidata oft auch unter Organisation.
+
 ## Erkundung der Quellen
 
 ```bash
@@ -977,9 +1088,11 @@ Erkundungsskript wurde danach wieder entfernt, weil der Nutzen zu klein war.
 - Rund 50 Werte sind Portal-URLs
   (`https://www.europeana.eu/en/collections/organisation/5053-…`); sie werden zu
   `organisation/<n>` korrigiert.
-- Die amerikanische Schreibweise **`organization/<n>`** löst ebenfalls auf und gilt als
-  korrekt: Dafür werden **keine** Korrektur-QS erzeugt (beim Vergleich zählen beide
-  Schreibweisen als gleich).
+- Die amerikanische Schreibweise **`organization/<n>`** löst ebenfalls auf, verletzt aber den
+  Format-Constraint von P7704 (`(place|agent|concept|item|organisation)(/base)?/[1-9][0-9]*`,
+  geprüft 27.11.2026). Seit 27.11.2026 gilt sie deshalb als Formatfehler: Ohne Quellen und
+  Qualifikatoren wird sie auf `organisation/<n>` korrigiert (Löschen + Neu, Fundstelle Europeana),
+  sonst nur berichtet. Beim Vergleich zählen beide Schreibweisen weiterhin als gleich.
 
 ## Projektstruktur
 
@@ -994,6 +1107,7 @@ glamsync/
   match.py                  # Zuordnung und Klassifikation (ohne Netz, getestet)
   registry.py               # Registerabgleich über Name + Website (ohne Netz, getestet)
   persons.py                # Personenabgleich Europeana-Agents (ohne Netz, getestet)
+  orgs.py                   # Organisationen europaweit: sameAs, Website-/Kennungs-Kandidaten (ohne Netz, getestet)
   gnd.py                    # GND-Körperschaften: Name + Ort, Zeitraum, Umlenkungen, Mix'n'match,
                             # Bezeichnungen (ohne Netz, getestet)
   pipeline.py               # Ablauf fetch / compare / export-qs

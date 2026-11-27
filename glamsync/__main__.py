@@ -1,4 +1,4 @@
-"""Kommandozeile: python -m glamsync {fetch,compare,export-qs,registry,export-mnm,cities,persons} …"""
+"""Kommandozeile: python -m glamsync {fetch,compare,export-qs,registry,export-mnm,cities,persons,organisations} …"""
 
 from __future__ import annotations
 
@@ -83,6 +83,10 @@ def main(argv: list[str] | None = None) -> None:
     pe.add_argument("--gnd", action="store_true",
                     help="auch P227 vorschlagen: Items ohne GND suchen und über lobid prüfen (langsam, selten ergiebig)")
 
+    og = sub.add_parser("organisations", help="Organisationen europaweit: Europeana ↔ Wikidata (P7704 organisation/…)")
+    og.add_argument("--no-candidates", action="store_true",
+                    help="nur Stufe 1 (sameAs); keine Kandidatensuche über Website/GND/VIAF/ISNI")
+
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(levelname)s %(name)s: %(message)s")
@@ -145,6 +149,11 @@ def main(argv: list[str] | None = None) -> None:
     elif args.cmd == "persons":
         s = pipeline.persons_compare(client, gnd_search=args.gnd)
         print(f"Fertig. Siehe out/personen_{s['date']}.md")
+        for name in s["files"]:
+            print("out/" + name)
+    elif args.cmd == "organisations":
+        s = pipeline.organisations_compare(client, candidates=not args.no_candidates)
+        print(f"Fertig. Siehe out/organisationen_{s['date']}.md")
         for name in s["files"]:
             print("out/" + name)
     elif args.cmd == "export-qs":

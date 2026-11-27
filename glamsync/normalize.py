@@ -145,8 +145,10 @@ def normalize_viaf(value: str | None) -> str | None:
 # ---------------------------------------------------------------------------
 # P7704 Europeana entity
 # ---------------------------------------------------------------------------
-# 'organization/<n>' (amerikanisch) löst bei Europeana ebenso auf wie 'organisation/<n>' und gilt
-# daher als korrekt – dafür wird keine Korrektur vorgeschlagen.
+# 'organization/<n>' (amerikanisch) löst bei Europeana ebenso auf wie 'organisation/<n>', verletzt aber
+# den Format-Constraint von P7704 ((place|agent|concept|item|organisation)(/base)?/[1-9][0-9]*,
+# Stand 27.11.2026). Seit 27.11.2026 gilt es daher als Formatfehler mit Korrektur auf 'organisation/<n>'
+# (beim Vergleich zählen beide Schreibweisen weiterhin als gleich).
 # Agents, Orte, Begriffe, Zeiträume: Europeana führt sie inzwischen als <typ>/<n>
 # (API-ID, data.europeana.eu/<typ>/<n>); <typ>/base/<n> wird nur noch per 301 umgeleitet.
 # Neue Werte daher ohne 'base'; vorhandene <typ>/base/<n>-Werte gelten weiter als gültig
@@ -192,6 +194,8 @@ def p7704_problem(value: str) -> str | None:
     v = value.strip()
     if _P7704_OK.match(v):
         n = v.rsplit("/", 1)[-1]
+        if v.startswith("organization/"):
+            return "amerikanische Schreibweise (Format-Constraint verlangt organisation/)"
         if v.startswith("organi") and len(n) >= LEGACY_ORG_ID_MIN_LEN:
             return "veraltete Organisations-ID (CRM)"
         return None
@@ -254,7 +258,7 @@ def check(prop: str, raw: str) -> Check:
     norm = normalize(prop, raw)
     if prop == "P7704":
         problem = p7704_problem(raw)
-        # gültig, wenn kein Problem vorliegt (auch 'organization/<n>', normalisiert nur für den Vergleich)
+        # gültig, wenn kein Problem vorliegt ('organization/<n>' ist seit 27.11.2026 ein Formatfehler)
         return Check(raw, norm, norm is not None and problem is None, problem)
     if norm is None:
         return Check(raw, None, False, "ungültiges Format")

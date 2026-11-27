@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections import defaultdict
 from collections.abc import Iterable
 
 from .. import config
-from ..http import CachedClient
+from ..http import CachedClient, SkippedRequest
 from ..models import Statement, WikidataItem
 from ..normalize import PROPERTIES
 
@@ -46,19 +47,36 @@ def _lit(v: str) -> str:
     return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+PATIENT_MAX_SLEEP = 300  # geduldiger Modus: höchstens so lange je Pause (Sekunden)
+PATIENT_RETRIES = 2
+
+
 class Wikidata:
-    def __init__(self, client: CachedClient) -> None:
+    def __init__(self, client: CachedClient, patient: bool = False) -> None:
+        """`patient`: bei Drosselung (429 mit langem Retry-After) die verlangte Zeit abwarten und
+        die Abfrage wiederholen, statt sie nach MAX_WAIT aufzugeben – für lange Abfrageserien, bei
+        denen eine fehlende Antwort zu falschen Vorschlägen führen könnte."""
         self.client = client
+        self.patient = patient
         if not config.CONTACT:
             log.warning("GLAMSYNC_CONTACT ist leer – Wikimedia verlangt eine Kontaktangabe im User-Agent.")
 
     def query(self, sparql: str) -> list[dict[str, str]]:
-        d = self.client.post_json(
-            config.WIKIDATA_SPARQL,
-            data={"query": sparql},
-            headers={"Accept": "application/sparql-results+json"},
-            timeout=120,
-        )
+        for attempt in range(PATIENT_RETRIES + 1 if self.patient else 1):
+            try:
+                d = self.client.post_json(
+                    config.WIKIDATA_SPARQL,
+                    data={"query": sparql},
+                    headers={"Accept": "application/sparql-results+json"},
+                    timeout=120,
+                )
+                break
+            except SkippedRequest as exc:
+                if not self.patient or attempt == PATIENT_RETRIES:
+                    raise
+                pause = min(max(exc.delay, 30.0), PATIENT_MAX_SLEEP)
+                log.warning("%s – warte %g s und versuche es erneut (%d/%d)", exc, pause, attempt + 1, PATIENT_RETRIES)
+                time.sleep(pause)
         return [{k: v["value"] for k, v in b.items()} for b in d["results"]["bindings"]]
 
     # --- Grundmenge -----------------------------------------------------------
@@ -405,6 +423,63 @@ SELECT DISTINCT ?l ?c ?root WHERE {{
             for r in rows:
                 out[forms[r["l"]]].append((_strip(r["c"]), _strip(r["root"])))
         return dict(out)
+
+    def all_names(self, qids: Iterable[str], batch: int = 100) -> dict[str, dict[str, list[str]]]:
+        """Labels und Aliasse aller Sprachen → {QID: {"labels": {Sprache: Label}, "aliases": [...]}}."""
+        qids = sorted(set(qids))
+        out: dict[str, dict] = {q: {"labels": {}, "aliases": []} for q in qids}
+        for chunk in _chunks(qids, batch):
+            rows = self.query(f"""
+SELECT ?item ?l ?lang ?kind WHERE {{
+  VALUES ?item {{ {" ".join(f"wd:{q}" for q in chunk)} }}
+  {{ ?item rdfs:label ?l . BIND("label" AS ?kind) }} UNION {{ ?item skos:altLabel ?l . BIND("alias" AS ?kind) }}
+  BIND(LANG(?l) AS ?lang)
+}}""")
+            for r in rows:
+                d = out[_strip(r["item"])]
+                if r["kind"] == "label":
+                    d["labels"][r.get("lang", "")] = r["l"]
+                else:
+                    d["aliases"].append(r["l"])
+        return out
+
+    def having(self, qids: Iterable[str], prop: str, batch: int = 300) -> set[str]:
+        """Die Items, die mindestens eine (beste) Aussage zu `prop` haben."""
+        qids = sorted(set(qids))
+        out: set[str] = set()
+        for chunk in _chunks(qids, batch):
+            rows = self.query(f"""
+SELECT DISTINCT ?item WHERE {{ VALUES ?item {{ {" ".join(f"wd:{q}" for q in chunk)} }} ?item wdt:{prop} [] . }}""")
+            out |= {_strip(r["item"]) for r in rows}
+        return out
+
+    def by_website(self, iris: Iterable[str], batch: int = 150) -> dict[str, list[str]]:
+        """Website-IRI → QIDs mit genau dieser P856 (beste Rang-Werte)."""
+        iris = sorted(set(iris))
+        out: dict[str, set[str]] = defaultdict(set)
+        for chunk in _chunks(iris, batch):
+            rows = self.query(f"""
+SELECT ?item ?w WHERE {{ VALUES ?w {{ {" ".join(f"<{v}>" for v in chunk)} }} ?item wdt:P856 ?w . }}""")
+            for r in rows:
+                out[r["w"]].add(_strip(r["item"]))
+        return {k: sorted(v) for k, v in out.items()}
+
+    def subclasses_of(self, classes: Iterable[str], root: str, batch: int = 40) -> set[str]:
+        """Die Klassen, die (P279*) Unterklasse von `root` sind.
+
+        `hint:gearing "forward"` lässt Blazegraph den Pfad von der Klasse aufwärts verfolgen statt
+        vom (riesigen) Unterbaum der Wurzel aus – rund zehnmal schneller (27.11.2026: 40 Klassen in 9 s).
+        """
+        classes = sorted(set(classes))
+        out: set[str] = set()
+        for i, chunk in enumerate(_chunks(classes, batch), 1):
+            rows = self.query(f"""
+SELECT DISTINCT ?c WHERE {{ VALUES ?c {{ {" ".join(f"wd:{c}" for c in chunk)} }}
+  ?c wdt:P279* wd:{root} . hint:Prior hint:gearing "forward" . }}""")
+            out |= {_strip(r["c"]) for r in rows}
+            if i % 5 == 0:
+                log.info("Klassenprüfung: %d/%d Klassen", min(i * batch, len(classes)), len(classes))
+        return out
 
     def resolve_redirects(self, qids: Iterable[str], batch: int = 200) -> dict[str, str]:
         """QID → Ziel-QID für Weiterleitungen."""

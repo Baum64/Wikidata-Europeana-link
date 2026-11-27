@@ -43,11 +43,15 @@ MAX_WAIT = 40
 class SkippedRequest(requests.RequestException):
     """Anfrage aufgegeben, weil der Server länger als MAX_WAIT Sekunden Pausen verlangt hätte."""
 
+    delay: float = 0.0  # zuletzt verlangte Wartezeit (z. B. Retry-After)
+
 
 def _wait(waited: float, delay: float, what: str) -> float:
     """Wartet `delay` Sekunden, sofern das Budget MAX_WAIT reicht; sonst SkippedRequest."""
     if waited + delay > MAX_WAIT:
-        raise SkippedRequest(f"{what}: übersprungen (verlangte Wartezeit {delay:g}s, Budget {MAX_WAIT}s)")
+        exc = SkippedRequest(f"{what}: übersprungen (verlangte Wartezeit {delay:g}s, Budget {MAX_WAIT}s)")
+        exc.delay = delay
+        raise exc
     log.warning("%s, warte %ss", what, delay)
     time.sleep(delay)
     return waited + delay

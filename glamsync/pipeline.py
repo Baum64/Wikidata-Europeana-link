@@ -16,6 +16,7 @@ from .match import (
     build_lookups,
     classify_record,
     decide_qid,
+    hold_duplicate_fixes,
     name_candidates,
     p7704_duplicates,
     resolve_collisions,
@@ -143,7 +144,7 @@ def compare(client: CachedClient, country: str, types: list[str], limit: int | N
     p7704_scan = wd.p7704_non_agent()
     raw_lookups["P7704"] = {}
     for r in p7704_scan:
-        if not r["rank"].lower().startswith("deprecated"):
+        if "deprecated" not in r["rank"].lower():
             raw_lookups["P7704"].setdefault(r["value"], []).append(r["qid"])
     lookups = build_lookups(raw_lookups)
 
@@ -172,6 +173,7 @@ def compare(client: CachedClient, country: str, types: list[str], limit: int | N
     wd_scope = {q: items[q] for q in (set(items) if base else needed)}
     wd_findings = wikidata_format_findings(wd_scope, europeana_org_ids, already)
     wd_findings += p7704_duplicates(p7704_scan)
+    hold_duplicate_fixes(findings + wd_findings)
     resolve_collisions(findings + wd_findings)
 
     # 6. Ausgabe
@@ -651,6 +653,209 @@ SELECT ?item WHERE { ?item wdt:P7704 ?v . FILTER(STRSTARTS(?v, "{prefix}")) FILT
         "gnd_checked": len(gnd_problems), "files": [p.name for p in files],
     }
     export.write_person_summary(summary, out / f"personen_{date}.md")
+    return summary
+
+
+# --- Organisationen: Europeana ↔ Wikidata europaweit (P7704 organisation/<n>) ----------------
+ORG_CLASS_CACHE = "klassen_organisation"  # data/klassen_organisation.json: Klasse → Unterklasse von Q43229?
+
+
+def _org_classes(wd: Wikidata, classes: set[str]) -> dict[str, bool]:
+    """P279*-Prüfung gegen Organisation (Q43229) mit dauerhaftem Zwischenspeicher (teure Abfrage)."""
+    from .orgs import ORGANIZATION
+
+    known: dict[str, bool] = _load(ORG_CLASS_CACHE) or {}
+    todo = sorted(classes - set(known))
+    if todo:
+        log.info("Klassenprüfung (Organisation): %d neue Klassen", len(todo))
+        ok = wd.subclasses_of(todo, ORGANIZATION)
+        known.update({c: c in ok for c in todo})
+        _save(ORG_CLASS_CACHE, dict(sorted(known.items())))
+    return known
+
+
+def organisations_compare(client: CachedClient, candidates: bool = True) -> dict:
+    from collections import defaultdict
+
+    from . import orgs as O
+    from .persons import ABGELEHNT, OHNE_OBJEKTE
+
+    wd = Wikidata(client, patient=True)  # lange Abfrageserien: bei Drosselung warten statt abbrechen
+    date = export.today()
+
+    # 1. Europeana-Organisationen (alle Länder, auch ohne Land)
+    orgs = {o.num: o for o in (O.org_from_raw(r) for r in europeana.fetch_all_raw(client))}
+
+    # 2. Wikidata: alle P7704 außer agent/… (Organisationen, Orte, Fehlformen)
+    scan = wd.p7704_non_agent()
+    value_owner: dict[str, set[str]] = defaultdict(set)
+    scan_qids: set[str] = set()
+    for r in scan:
+        v = normalize("P7704", r["value"])
+        if not v or v.startswith("organisation/"):
+            scan_qids.add(r["qid"])
+        if v and v.startswith("organisation/") and "deprecated" not in r["rank"].lower():
+            value_owner[v].add(r["qid"])
+    log.info("Wikidata: %d organisation-Werte, %d Items mit organisation-/Fehlform-Werten",
+             sum(len(q) for q in value_owner.values()), len(scan_qids))
+
+    # 3. Stufe 1: sameAs → QID (Weiterleitungen aufgelöst)
+    redirects = wd.resolve_redirects({q for o in orgs.values() for q in o.qids})
+    groups: dict[str, list] = defaultdict(list)
+    multi, no_qid = [], []
+    for o in orgs.values():
+        o.qids = sorted({redirects.get(q, q) for q in o.qids})
+        if len(o.qids) == 1:
+            groups[o.qids[0]].append(o)
+        elif o.qids:
+            multi.append(o)
+        else:
+            no_qid.append(o)
+    claimed: dict[str, list[str]] = defaultdict(list)
+    for o in orgs.values():
+        for q in o.qids:
+            claimed[q].append(o.num)
+
+    # 4. Stufe 2: Organisationen ohne sameAs – Kandidaten über Website (P856) und GND/VIAF/ISNI
+    cands: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+    todo = [o for o in no_qid if o.value not in value_owner]
+    if candidates:
+        full_map: dict[str, set[str]] = defaultdict(set)
+        dom_map: dict[str, set[str]] = defaultdict(set)
+        for o in todo:
+            for h in o.homepages:
+                full, dom = O.website_variants(h)
+                for v in full:
+                    full_map[v].add(o.num)
+                for v in dom:
+                    dom_map[v].add(o.num)
+        log.info("Stufe 2: %d Organisationen ohne sameAs, %d Website-Varianten", len(todo),
+                 len(set(full_map) | set(dom_map)))
+        for iri, qs in wd.by_website(set(full_map) | set(dom_map)).items():
+            for kind, m in (("website", full_map), ("domain", dom_map)):
+                for num in m.get(iri, ()):
+                    for q in qs:
+                        cands[num][q].add(kind)
+        for prop in O.ID_PROPS:
+            vals = {v for o in todo for v in o.ids.get(prop, [])}
+            owners = wd.lookup(prop, vals) if vals else {}
+            for o in todo:
+                for v in o.ids.get(prop, []):
+                    for q in owners.get(v, []):
+                        cands[o.num][q].add(prop)
+        log.info("Stufe 2: Kandidaten für %d Organisationen", len(cands))
+
+    # 5. Detaildaten, Namen (alle Sprachen) und Klassenprüfung
+    cand_q = {q for d in cands.values() for q in d}
+    items = wd.fetch_items(set(groups) | {q for o in multi for q in o.qids} | cand_q | scan_qids)
+    missing = {q for q, it in items.items() if not (it.labels or it.p31 or it.claims)}
+    gap = {q for q in groups if q not in missing and not O.present_values(items[q])}
+    name_q = (gap | cand_q) - missing
+    raw_names = wd.all_names(name_q)
+    names = {q: list(d["labels"].values()) + d["aliases"] for q, d in raw_names.items()}
+    known = _org_classes(wd, {c for q in name_q for c in items[q].p31})
+    # Gemeinden, Regionen u. Ä. liegen oft auch unter Organisation; die Einwohnerzahl (P1082)
+    # kennzeichnet das Gebiet – die Verwaltung (Ministerium, Bistum, County Council) hat keine.
+    populated = wd.having(name_q, "P1082")
+    is_org = {q: any(known.get(c) for c in items[q].p31) and q not in populated for q in name_q}
+
+    def label(q: str) -> str:
+        it, ls = items.get(q), raw_names.get(q, {}).get("labels", {})
+        return (it.label if it else "") or ls.get("de") or ls.get("en") or ls.get("mul") or next(iter(ls.values()), "")
+
+    # 6. Klassifikation
+    stage1 = []
+    for q, os_ in groups.items():
+        f, _ = O.classify_org(q, os_, None if q in missing else items[q], names.get(q, []),
+                              is_org.get(q, False), value_owner)
+        stage1.append(f)
+    stage1 += [O.multi_qid(o, items) for o in multi]
+    stage2 = [O.classify_candidate(o, cands.get(o.num, {}), items, names, is_org, claimed, value_owner)
+              for o in no_qid]
+    resolve_collisions(stage1 + stage2)
+    territory = "Gebiet: Item hat eine Einwohnerzahl (P1082)"
+    for f in stage1:
+        if f.status == O.KEIN_ORGANISATION and f.qid in populated:
+            f.note = f"{territory}; {f.note}"
+    for f in stage2:
+        for q in populated & set(cands.get(f.source_id, {})):
+            f.note = f.note.replace(f"{q} keine Organisation", f"{q} keine Organisation ({territory})")
+
+    # 7. Formatprüfung vorhandener Werte (organization/ → organisation/, Fehlformen) und Dubletten
+    already = {(f.qid, f.prop, f.old_value) for f in stage1 + stage2 if f.old_value}
+    scope = {q: items[q] for q in scan_qids | set(groups) if q in items and q not in missing}
+    wd_findings = [f for f in wikidata_format_findings(scope, set(orgs), already) if f.prop == "P7704"]
+    wd_findings += p7704_duplicates(scan)
+    hold_duplicate_fixes(wd_findings)
+
+    # 8. Ausgabe
+    def country_key(f):
+        o = orgs.get((f.source_id or "").split(",")[0])
+        return ((o.country or "~") if o else "~", (o.label if o else "").casefold())
+
+    stage1.sort(key=country_key)
+    stage2.sort(key=lambda f: (f.status != O.KANDIDAT_STARK, *country_key(f)))
+    labels = {q: label(q) for q in items}
+    commented = {O.NAME_PRUEFEN, O.KANDIDAT_SCHWACH}
+    tag = "organisationen"
+
+    def write(fs, name):
+        return export.write_qs_groups(O.qs_groups(fs, date, orgs, labels, commented), "P7704", tag, name, date)
+
+    def objects(f):
+        return orgs[f.source_id].record_count if f.source_id in orgs else 0
+
+    cand_fs = [f for f in stage2 if f.status in (O.KANDIDAT_STARK, O.KANDIDAT_SCHWACH)]
+    files = []
+    files += write([f for f in stage1 if f.status == FEHLT], "neu")
+    files += write([f for f in stage1 if f.status == OHNE_OBJEKTE], "ohne_objekte")
+    files += write([f for f in stage1 if f.status == O.NAME_PRUEFEN], "pruefen")
+    files += write([f for f in cand_fs if objects(f)], "kandidaten")
+    files += write([f for f in cand_fs if not objects(f)], "kandidaten_ohne_objekte")
+    files += export.write_qs(wd_findings, "P7704", "fix", date, tag=tag)
+    files += export.write_qs(wd_findings, "P7704", "delete", date, tag=tag)
+
+    def target(f, stage):
+        if f.action == "new" and f.qid:
+            if stage == 1:
+                return {FEHLT: "neu", OHNE_OBJEKTE: "ohne_objekte", O.NAME_PRUEFEN: "pruefen (#)"}.get(f.status, "")
+            return ("kandidaten" if objects(f) else "kandidaten_ohne_objekte") + \
+                (" (#)" if f.status == O.KANDIDAT_SCHWACH else "")
+        return {"fix": "korrektur", "delete": "loeschen"}.get(f.action or "", "")
+
+    rows = []
+    for stage, fs in ((1, stage1), (2, stage2), (0, wd_findings)):
+        for f in fs:
+            o = orgs.get((f.source_id or "").split(",")[0])
+            rows.append({
+                "stufe": {1: "sameAs", 2: "kandidat", 0: "wikidata"}[stage], "land": (o.country or "") if o else "",
+                "europeana_id": f.source_id or "", "europeana_label": o.label if o else "",
+                "objekte": o.record_count if o else "", "homepage": " ".join(o.homepages) if o else "",
+                "europeana_url": o.url if o else "", "qid": f.qid or "", "wikidata_label": labels.get(f.qid, ""),
+                "status": f.status, "vorschlag": f.source_value or "",
+                "wikidata": f.old_value or "|".join(f.wikidata_values), "datei": target(f, stage), "hinweis": f.note,
+            })
+    export.write_org_report(rows, config.OUT_DIR / f"organisationen_{date}.csv")
+
+    def count(fs):
+        return dict(Counter(f.status for f in fs).most_common())
+
+    new_by_country: dict[str, Counter] = defaultdict(Counter)
+    for f in stage1 + cand_fs:
+        if f.action == "new" and f.qid:
+            o = orgs.get(f.source_id)
+            new_by_country[(o.country if o else None) or "–"][f.status] += 1
+    summary = {
+        "date": date, "orgs": len(orgs), "with_qid": len(orgs) - len(no_qid), "multi_qid": len(multi),
+        "wikidata_values": sum(len(q) for q in value_owner.values()), "candidates": candidates,
+        "no_qid": len(no_qid), "no_qid_searched": len(todo), "with_candidates": len(cands),
+        "stage1": count(stage1), "stage2": count(stage2),
+        "wikidata": dict(Counter(f"{f.status}/{f.action or 'bericht'}" for f in wd_findings).most_common()),
+        "by_country": {k: dict(v) for k, v in sorted(new_by_country.items(), key=lambda kv: -sum(kv[1].values()))},
+        "files": [p.name for p in files], "classes": len(known),
+    }
+    export.write_org_summary(summary, config.OUT_DIR / f"organisationen_{date}.md")
+    log.info("Neu-Vorschläge mit veraltetem Wert: %d", sum(1 for f in stage1 + stage2 if f.status == ABGELEHNT))
     return summary
 
 

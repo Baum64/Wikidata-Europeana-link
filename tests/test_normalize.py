@@ -100,7 +100,7 @@ def test_normalize_p7704(raw, expected):
     "raw,fragment",
     [
         ("organisation/1234", None),
-        ("organization/1234", None),  # beide Schreibweisen lösen auf
+        ("organization/1234", "amerikanische"),  # löst auf, verletzt aber den Format-Constraint
         ("Organization/1234", "unbekanntes Format"),
         ("http://data.europeana.eu/organization/1", "URL"),
         ("item/2048128/618580", "P727"),
@@ -118,9 +118,9 @@ def test_p7704_problem(raw, fragment):
 
 
 def test_p7704_check():
-    # 'organization/' gilt als korrekt → keine Korrektur-QS
+    # 'organization/' verletzt den Format-Constraint → Korrektur auf 'organisation/' (seit 27.11.2026)
     c = check("P7704", "organization/4648")
-    assert c.normalized == "organisation/4648" and c.format_ok
+    assert c.normalized == "organisation/4648" and not c.format_ok
     assert check("P7704", "organisation/4648").format_ok
 
 

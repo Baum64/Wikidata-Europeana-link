@@ -239,7 +239,7 @@ def p7704_duplicates(scan: list[dict[str, str]]) -> list[Finding]:
     """Organisations-P7704-Werte, die an mehreren Items hängen."""
     by_value: dict[str, set[str]] = defaultdict(set)
     for r in scan:
-        if r["rank"].lower().startswith("deprecated"):
+        if "deprecated" in r["rank"].lower():
             continue
         norm = normalize("P7704", r["value"])
         if norm and norm.startswith("organisation/"):
@@ -251,6 +251,18 @@ def p7704_duplicates(scan: list[dict[str, str]]) -> list[Finding]:
                 out.append(Finding("P7704", MEHRDEUTIG, q, "wikidata", "", value, [],
                                    note=f"Dubletten-Verdacht: {value} an {','.join(sorted(qids))}"))
     return out
+
+
+def hold_duplicate_fixes(findings: list[Finding]) -> int:
+    """Korrekturen für Werte, die an mehreren Items hängen (Dubletten-Verdacht), nur berichten:
+    sonst stünde der korrigierte Wert mit Fundstelle an allen Dubletten."""
+    dups = {f.source_value for f in findings if f.prop == "P7704" and f.note.startswith("Dubletten-Verdacht")}
+    n = 0
+    for f in findings:
+        if f.prop == "P7704" and f.action == "fix" and f.source_value in dups:
+            f.action, n = None, n + 1
+            f.note += "; Wert an mehreren Items (Dublette) – erst klären"
+    return n
 
 
 # --- Namenskandidaten (nur zur Handprüfung) ----------------------------------

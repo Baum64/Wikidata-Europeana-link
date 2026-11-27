@@ -79,10 +79,10 @@ def test_fehlt_but_value_used_elsewhere():
     assert f.status == MEHRDEUTIG and "Q2" in f.note
 
 
-def test_organization_spelling_is_identical():
-    # beide Schreibweisen lösen bei Europeana auf → keine Korrektur
+def test_organization_spelling_is_fixed():
+    # gleicher Wert, aber 'organization/' verletzt den Format-Constraint → Korrektur
     f = classify_property(rec(P7704=["organisation/4373"]), "Q1", item(P7704=["organization/4373"]), "P7704", NO_LOOKUPS)
-    assert f.status == IDENTISCH and f.action is None
+    assert f.status == FORMATFEHLER and f.action == "fix" and f.old_value == "organization/4373"
 
 
 def test_formatfehler_fix():
@@ -142,8 +142,10 @@ def test_wikidata_format_unknown_org_id_not_fixed():
     assert fs[0].action is None
 
 
-def test_wikidata_organization_spelling_no_finding():
-    assert wikidata_format_findings({"Q1": item(P7704=["organization/4373"])}, {"4373"}, set()) == []
+def test_wikidata_organization_spelling_fix():
+    fs = wikidata_format_findings({"Q1": item(P7704=["organization/4373"])}, {"4373"}, set())
+    assert len(fs) == 1 and fs[0].action == "fix" and fs[0].source_value == "organisation/4373"
+    assert fs[0].source == "europeana" and "amerikanische" in fs[0].note
 
 
 def test_wikidata_invalid_p7704_delete():
@@ -186,3 +188,14 @@ def test_split_parts_keeps_pairs_together():
 
 def test_split_parts_default_500():
     assert [len(p) for p in split_parts([["a"]] * 1203)] == [500, 500, 203]
+
+
+def test_duplicate_values_are_not_fixed():
+    from glamsync.match import hold_duplicate_fixes
+
+    items = {"Q1": item(P7704=["organization/4648"]), "Q2": item(P7704=["organization/4648"])}
+    fs = wikidata_format_findings(items, {"4648"}, set())
+    scan = [{"qid": q, "value": "organization/4648", "rank": "ontology#NormalRank"} for q in items]
+    fs += p7704_duplicates(scan)
+    assert hold_duplicate_fixes(fs) == 2
+    assert all(f.action is None for f in fs) and "Dublette" in fs[0].note
