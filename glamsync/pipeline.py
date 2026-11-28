@@ -187,23 +187,23 @@ def compare(client: CachedClient, country: str, types: list[str], limit: int | N
             "match_via": m.via if m.qid else "", "match_status": m.status or "zugeordnet",
             "note": m.note, "findings": [f.to_dict() for f in m.findings],
         })
-    export.write_report(match_rows, wd_findings, out / f"report_{date}.csv")
+    export.write_report(match_rows, wd_findings, export.out_path(date, "report", ".csv"))
 
     unmatched = [m.record for m in matches if not m.qid]
     pool = {q: it for q, it in items.items()}
     cands = name_candidates(unmatched, pool)
-    export.write_candidates(cands, out / f"kandidaten_namen_{date}.csv")
+    export.write_candidates(cands, export.out_path(date, "kandidaten_namen", ".csv"))
 
     results = {
         "date": date, "country": country, "types": types, "limit": limit, "subclasses": subclasses,
         "matches": match_rows, "wikidata_findings": [f.to_dict() for f in wd_findings],
     }
-    results_path = out / f"results_{date}.json"
+    results_path = export.out_path(date, "results", ".json")
     results_path.write_text(json.dumps(results, ensure_ascii=False, indent=1), encoding="utf-8")
 
     summary = build_summary(results, base, notes)
     summary["candidates"] = len(cands)
-    export.write_summary(summary, out / f"summary_{date}.md")
+    export.write_summary(summary, export.out_path(date, "summary", ".md"))
     return summary
 
 
@@ -251,9 +251,9 @@ def build_summary(results: dict, base: dict[str, dict[str, WikidataItem]], notes
 # --- export-qs -------------------------------------------------------------------
 def export_qs(prop: str, action: str, date: str | None = None) -> list[Path]:
     date = date or export.today()
-    path = config.OUT_DIR / f"results_{date}.json"
+    path = export.out_path(date, "results", ".json")
     if not path.is_file():
-        candidates = sorted(config.OUT_DIR.glob("results_*.json"))
+        candidates = sorted(config.OUT_DIR.glob("????-??-??_results.json"))
         if not candidates:
             raise SystemExit("Keine Ergebnisse gefunden – zuerst `compare` ausführen.")
         path = candidates[-1]
@@ -337,7 +337,7 @@ def registry_compare(client: CachedClient, source: str, country: str, types: lis
     # 4. Ausgabe
     out = config.OUT_DIR
     out.mkdir(parents=True, exist_ok=True)
-    stem = f"register_{source}_{country}_{date}"
+    stem = export.out_path(date, f"register_{source}_{country}", "", prop).name
     export.write_registry_report(matches, items, out / f"{stem}.csv")
     export.write_registry_cleanup(cleanup, items, prop, out / f"{stem}_bereinigung.csv")
     qs_files = export.write_registry_qs(matches, prop, source, country, date)
@@ -439,7 +439,7 @@ def cities_compare(client: CachedClient, country: str = "europa", city_class: st
             "hinweis": f.note,
         })
     rows.sort(key=lambda r: (r["land"], r["status"], r["wikidata_label"]))
-    export.write_city_report(rows, out / f"staedte_{tag_country}_{date}.csv")
+    export.write_city_report(rows, export.out_path(date, f"staedte_{tag_country}", ".csv", "P7704"))
 
     per_country: dict[str, Counter] = {}
     for f in findings:
@@ -456,7 +456,7 @@ def cities_compare(client: CachedClient, country: str = "europa", city_class: st
     }
     if wd_findings:
         summary["status"]["formatpruefung_wikidata"] = len(wd_findings)
-    export.write_city_summary(summary, out / f"staedte_{tag_country}_{date}.md")
+    export.write_city_summary(summary, export.out_path(date, f"staedte_{tag_country}", ".md", "P7704"))
     return summary
 
 
@@ -643,7 +643,7 @@ SELECT ?item WHERE { ?item wdt:P7704 ?v . FILTER(STRSTARTS(?v, "{prefix}")) FILT
             "wikidata": f.old_value or "|".join(f.wikidata_values), "aktion": f.action or "", "hinweis": f.note,
         })
     rows.sort(key=lambda r: (r["property"], r["status"], r["qid"]))
-    export.write_person_report(rows, out / f"personen_{date}.csv")
+    export.write_person_report(rows, export.out_path(date, "personen", ".csv"))
 
     summary = {
         "date": date, "agents": len(recs), "wikidata_values": len(scan), "items": len(groups),
@@ -652,7 +652,7 @@ SELECT ?item WHERE { ?item wdt:P7704 ?v . FILTER(STRSTARTS(?v, "{prefix}")) FILT
         "cleanup": dict(Counter(f"{c.kind}/{c.action or 'bericht'}" for c in cleanups).most_common()),
         "gnd_checked": len(gnd_problems), "files": [p.name for p in files],
     }
-    export.write_person_summary(summary, out / f"personen_{date}.md")
+    export.write_person_summary(summary, export.out_path(date, "personen", ".md"))
     return summary
 
 
@@ -835,7 +835,7 @@ def organisations_compare(client: CachedClient, candidates: bool = True) -> dict
                 "status": f.status, "vorschlag": f.source_value or "",
                 "wikidata": f.old_value or "|".join(f.wikidata_values), "datei": target(f, stage), "hinweis": f.note,
             })
-    export.write_org_report(rows, config.OUT_DIR / f"organisationen_{date}.csv")
+    export.write_org_report(rows, export.out_path(date, "organisationen", ".csv", "P7704"))
 
     def count(fs):
         return dict(Counter(f.status for f in fs).most_common())
@@ -854,7 +854,7 @@ def organisations_compare(client: CachedClient, candidates: bool = True) -> dict
         "by_country": {k: dict(v) for k, v in sorted(new_by_country.items(), key=lambda kv: -sum(kv[1].values()))},
         "files": [p.name for p in files], "classes": len(known),
     }
-    export.write_org_summary(summary, config.OUT_DIR / f"organisationen_{date}.md")
+    export.write_org_summary(summary, export.out_path(date, "organisationen", ".md", "P7704"))
     log.info("Neu-Vorschläge mit veraltetem Wert: %d", sum(1 for f in stage1 + stage2 if f.status == ABGELEHNT))
     return summary
 
@@ -959,7 +959,7 @@ def gnd_compare(client: CachedClient, country: str = "Q183", types: list[str] | 
     # 6. Ausgabe
     out = config.OUT_DIR
     out.mkdir(parents=True, exist_ok=True)
-    stem = f"register_gnd_{country}_{date}"
+    stem = export.out_path(date, f"register_gnd_{country}", "", "P227").name
     export.write_gnd_report(matches, items, out / f"{stem}.csv", annotations)
     export.write_gnd_format(fmt_findings, items, out / f"{stem}_formatfehler.csv")
     export.write_gnd_redirects(redirect_findings, items, out / f"{stem}_umlenkungen.csv")
@@ -1041,7 +1041,7 @@ def gnd_labels(client: CachedClient, country: str = "Q183", rebuild: bool = Fals
 
     out = config.OUT_DIR
     tag = f"gnd_{country}"
-    report = out / f"bezeichnungen_{tag}_{date}.csv"
+    report = export.out_path(date, f"bezeichnungen_{tag}", ".csv")
     export.write_terms_report(proposals, report)
     files, counts = [], {}
     for kind in export.TERM_KINDS:
@@ -1051,6 +1051,84 @@ def gnd_labels(client: CachedClient, country: str = "Q183", rebuild: bool = Fals
     return {"date": date, "country": country, "items": len(terms), "counts": counts,
             "notes": sum(bool(p.note) for p in proposals), "report": report.name,
             "files": [p.name for p in files]}
+
+
+def wikidata_labels(client: CachedClient, country: str = "europa", types: list[str] | None = None) -> dict:
+    """mul- und englische Labels für Museen, Bibliotheken und Archive (P31/P279*) ohne mul- und
+    ohne en-Label, je Staat abgefragt (siehe glamsync/labels.py).
+
+    Labels und Aliase live über die API; englische Namen aus P1448 und – für Items mit
+    Europeana-Organisation (P7704 in Wikidata, sonst einzige sameAs-QID) – aus Europeana.
+    Schreibt nur Dateien.
+    """
+    from collections import defaultdict
+
+    from . import labels as L
+    from . import orgs as O
+
+    wd = Wikidata(client, patient=True)
+    date = export.today()
+    types = types or list(TYPES)
+    if country.lower() in ("europa", "europe"):
+        countries = wd.european_countries()
+        tag = "europa"
+    else:
+        countries = {c.strip(): c.strip() for c in country.split(",")}
+        tag = country.replace(",", "-")
+
+    # 1. Pool je Staat und Typ
+    item_countries: dict[str, set[str]] = defaultdict(set)
+    failed = []
+    for c, name in countries.items():
+        for t in types:
+            try:
+                found = wd.without_en_mul(c, TYPES[t])
+            except Exception as exc:  # z. B. SPARQL-Timeout
+                log.warning("%s/%s nicht abrufbar: %s", name, t, exc)
+                failed.append(f"{name} ({c}) {t}")
+                continue
+            for q in found:
+                item_countries[q].add(c)
+            log.info("Wikidata %s/%s: %d Items ohne en- und mul-Label", name, t, len(found))
+    log.info("Pool: %d Items", len(item_countries))
+
+    # 2. Bezeichnungen live, Amtssprachen, offizielle englische Namen
+    terms = wd.terms(item_countries)
+    official = wd.country_languages(countries)
+    off_en = wd.official_names(terms)
+    items = {q: {**t, "countries": sorted(item_countries[q]), "official_en": off_en.get(q, [])}
+             for q, t in terms.items()}
+
+    # 3. Europeana-Verknüpfungen (für englische Namen)
+    orgs = {o.num: o for o in (O.org_from_raw(r) for r in europeana.fetch_all_raw(client))}
+    owner: dict[str, set[str]] = defaultdict(set)
+    for r in wd.p7704_non_agent():
+        v = normalize("P7704", r["value"])
+        if v and v.startswith("organisation/") and "deprecated" not in r["rank"].lower():
+            owner[v].add(r["qid"])
+    redirects = wd.resolve_redirects({q for o in orgs.values() for q in o.qids})
+    linked: dict[str, list] = defaultdict(list)
+    for o in orgs.values():
+        qs = owner.get(o.value, set())
+        same = sorted({redirects.get(q, q) for q in o.qids})
+        q = next(iter(qs)) if len(qs) == 1 else (same[0] if not qs and len(same) == 1 else None)
+        if q in items:
+            linked[q].append(o)
+
+    proposals = L.label_proposals(items, official, linked)
+
+    # 4. Ausgabe
+    out = config.OUT_DIR
+    report = export.out_path(date, f"bezeichnungen_{tag}", ".csv")
+    export.write_label_report(proposals, report, countries)
+    files, counts = [], {}
+    for kind in ("Lmul", "Len"):
+        groups = L.label_commands(proposals, kind)
+        counts[kind] = {"items": len(groups), "lines": sum(len(x) for x in groups)}
+        files += export.write_qs_groups(groups, kind, tag, "neu", date)
+    return {"date": date, "items": len(items), "countries": len(countries), "failed": failed,
+            "counts": counts, "notes": sum(bool(p.note) for p in proposals), "report": report.name,
+            "files": [p.name for p in files], "en_sources": Counter(p.en_source for p in proposals if p.en)}
 
 
 # --- Anreicherung aus der GND (P214, P213, P571, P131, P31) -----------------------------
@@ -1126,7 +1204,7 @@ def gnd_enrich(client: CachedClient, country: str = "Q183") -> dict:
     for prop, label in (("P214", "neu"), ("P213", "neu"), ("P571", "neu"), ("P131", "neu"), ("P31", "ersetzen")):
         groups = [x.commands(date) for x in props if x.prop == prop and x.action == "neu"]
         files += export.write_qs_groups(groups, prop, tag, label, date)
-    report = out / f"anreicherung_{tag}_{date}.csv"
+    report = export.out_path(date, f"anreicherung_{tag}", ".csv")
     with report.open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh, delimiter=";")
         w.writerow(["qid", "label", "gnd", "property", "wert", "entfernt", "aktion", "hinweis"])
@@ -1138,3 +1216,166 @@ def gnd_enrich(client: CachedClient, country: str = "Q183") -> dict:
     return {"date": date, "country": country, "items": len(pairs), "counts": counts,
             "files": [p.name for p in files], "report": report.name, "map": str(map_path),
             "map_open": sum(1 for t in need if t not in class_map)}
+
+
+# --- Websites (P856) aus ISIL-Register, GND, Museen in Österreich, Europeana, DDB ---------------
+WEBSITE_COUNTRIES = ("Q183", "Q40", "Q39")
+
+
+def websites_compare(client: CachedClient, country: str = "Q183", types: list[str] | None = None,
+                     limit: int | None = None) -> dict:
+    """P856 für Pool-Items ohne Website: Adressen aus Quellen, die über eine Kennung am Item hängen,
+    werden abgerufen und geprüft (siehe glamsync/websites.py). Schreibt nur Dateien."""
+    from collections import defaultdict
+
+    from . import orgs as O
+    from . import websites as W
+    from .registry import norm_url
+    from .sources import gnd as gnd_src
+    from .sources import linkcheck
+    from .sources import registry as reg_src
+
+    if country not in WEBSITE_COUNTRIES:
+        raise SystemExit(f"websites: nur {', '.join(WEBSITE_COUNTRIES)} (Quellen nur für DE/AT/CH).")
+    wd = Wikidata(client, patient=True)
+    date = export.today()
+    types = types or list(TYPES)
+
+    # 1. Pool des Landes (bei Q183 auch DDR); Aussagen live über die API
+    qids: set[str] = set()
+    for c in [country] + ([GDR] if country == "Q183" else []):
+        for t in types:
+            path = _data_path(f"wikidata_{c}_{t}_sub")
+            d = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else fetch_wikidata(client, c, [t], True)[t]
+            qids |= set(d)
+    log.info("Pool %s: %d Items – lade Aussagen über die Wikidata-API", country, len(qids))
+    ents = wd.entity_claims(qids, W.PROPS)
+
+    # 2. Quellen
+    gnd_by = {b.gnd: b for b in gnd_src.load_table(config.GND_TABLE)} if config.GND_TABLE.is_file() else {}
+    if not gnd_by:
+        log.warning("GND-Tabelle fehlt (%s) – GND-Homepages werden nicht berücksichtigt", config.GND_TABLE)
+    isil_recs = reg_src.fetch_isil_ch(client) if country == "Q39" else reg_src.fetch_isil(client, ISIL_PREFIX[country])
+    isil_by = {r.value.upper(): r for r in isil_recs}
+    mure_by = {r.value.upper(): r for r in reg_src.fetch_mure(client)} if country == "Q40" else {}
+    orgs = {o.value: o for o in (O.org_from_raw(x) for x in europeana.fetch_all_raw(client))}
+    ddb_isil: dict[str, list] = defaultdict(list)
+    ddb_gnd: dict[str, list] = defaultdict(list)
+    if country == "Q183":
+        recs = [SourceRecord(**r) for r in (_load("ddb_archive-library-museum") or [])] or fetch_ddb(client, list(TYPES), None)
+        for r in recs:
+            web = ddb.fetch_website(client, r.source_id)
+            if not web:
+                continue
+            s = W.SourceUrl("ddb", r.source_id, web, r.url, r.label)
+            for v in r.ids.get("P791", []):
+                ddb_isil[v.upper()].append(s)
+            for v in r.ids.get("P227", []):
+                ddb_gnd[v].append(s)
+        log.info("DDB: %d Institutionen, Website über ISIL %d / GND %d", len(recs), len(ddb_isil), len(ddb_gnd))
+
+    # 3. Items ohne gültige P856 mit mindestens einer Quell-Adresse
+    def vals(cl: dict, prop: str) -> list[str]:
+        return [s["value"] for s in cl.get(prop, []) if s["rank"] != "deprecated" and isinstance(s["value"], str)]
+
+    with_p856 = 0
+    infos: list = []
+    for q in sorted(ents, key=lambda x: int(x[1:])):
+        e = ents[q]
+        cl = e["claims"]
+        if vals(cl, "P856"):
+            with_p856 += 1
+            continue
+        labels = e["labels"]
+        info = W.ItemInfo(q, labels.get("de") or labels.get("mul") or labels.get("en") or next(iter(labels.values()), ""),
+                          names=list(labels.values()))
+        hist = []
+        for g in vals(cl, "P227"):
+            b = gnd_by.get(g)
+            if b:
+                hist.append(b.historical)
+                info.names += [b.name, *b.variants]
+                info.places += b.place_names
+                info.sources += [W.SourceUrl("gnd", b.gnd, u, f"https://d-nb.info/gnd/{b.gnd}", b.name) for u in b.homepages]
+            info.sources += ddb_gnd.get(g, [])
+        for v in vals(cl, "P791"):
+            r = isil_by.get(v.upper())
+            if r:
+                info.names += [r.name, *r.alt_names]
+                info.places += [r.city] if r.city else []
+                info.sources += [W.SourceUrl(r.source, r.value, u, r.url, r.name) for u in r.websites]
+            info.sources += ddb_isil.get(v.upper(), [])
+        for v in vals(cl, "P7917"):
+            r = mure_by.get(v.upper())
+            if r:
+                info.names.append(r.name)
+                info.places += [r.city] if r.city else []
+                info.sources += [W.SourceUrl("mure", r.value, u, r.url, r.name) for u in r.websites]
+        for v in vals(cl, "P7704"):
+            o = orgs.get(normalize("P7704", v) or v)
+            if o:
+                info.names += o.names
+                info.sources += [W.SourceUrl("europeana", o.value, u, o.url, o.label) for u in o.homepages]
+        uniq = {}
+        for s in info.sources:
+            uniq.setdefault((s.source, s.url.strip()), s)
+        info.sources = list(uniq.values())
+        if not info.sources:
+            continue
+        if vals(cl, "P576"):
+            info.dissolved = "P576 (aufgelöst) am Item"
+        elif hist and all(hist):
+            info.dissolved = "GND: aufgelöst (ohne Nachfolger)"
+        info.deprecated = [s["value"] for s in cl.get("P856", []) if s["rank"] == "deprecated"]
+        infos.append(info)
+    log.info("Items ohne P856: %d, davon mit Quell-Adresse: %d", len(ents) - with_p856, len(infos))
+    if limit:
+        infos = infos[:limit]
+        log.info("Trockenlauf: nur die ersten %d Items", len(infos))
+
+    # 4. Linkprüfung
+    urls = {s.url.strip() for i in infos for s in i.sources if not W.url_problem(s.url)}
+    checks = linkcheck.check_urls(urls, use_cache=client.use_cache)
+
+    # 5. P856 an anderen Items (ganz Wikidata), alle Schreibweisen von Quell- und Zieladresse
+    forms = set(urls) | {W.proposed_value(c.url, c.final) for c in checks.values() if c.final}
+    variants: set[str] = set()
+    for u in forms:
+        variants |= O.website_variants(u)[0]
+    owners: dict[str, set[str]] = defaultdict(set)
+    for iri, qs in wd.by_website(variants).items():
+        owners[norm_url(iri)] |= set(qs)
+    shared: dict[str, set[str]] = defaultdict(set)
+    for i in infos:
+        for s in i.sources:
+            shared[norm_url(s.url)].add(i.qid)
+
+    # 6. Klassifikation
+    proposals = [W.classify_item(i, checks, owners, shared, country) for i in infos]
+    collisions = W.resolve_collisions(proposals)
+
+    # 7. Ausgabe
+    out = config.OUT_DIR
+    out.mkdir(parents=True, exist_ok=True)
+    files = []
+    for status in (W.NEU, W.PRUEFEN):
+        groups = [W.commands(p, date) for p in proposals if p.status == status]
+        files += export.write_qs_groups(groups, "P856", country, status, date)
+    report = export.out_path(date, f"webseiten_{country}", ".csv", "P856")
+    export.write_website_report(proposals, report)
+    states = Counter(f.state for p in proposals for f in p.urls)
+    summary = {
+        "date": date, "country": country, "pool": len(ents), "with_p856": with_p856,
+        "without_p856": len(ents) - with_p856, "items": len(infos), "urls": len(urls),
+        "status": {s: n for s in W.STATUSES if (n := sum(p.status == s for p in proposals))},
+        "url_states": dict(states.most_common()),
+        "sources": dict(Counter(s.source for i in infos for s in i.sources).most_common()),
+        "first_source": {st: dict(Counter(p.sources[0].source for p in proposals if p.status == st and p.sources))
+                         for st in (W.NEU, W.PRUEFEN)},
+        "multi_source": sum(1 for p in proposals if p.status in (W.NEU, W.PRUEFEN) and len(p.sources) > 1),
+        "evidence": dict(Counter(p.evidence or "–" for p in proposals if p.status in (W.NEU, W.PRUEFEN))),
+        "p407": dict(Counter(p.lang or "ohne" for p in proposals if p.status in (W.NEU, W.PRUEFEN))),
+        "collisions": collisions, "files": [p.name for p in files], "report": report.name,
+    }
+    export.write_website_summary(summary, export.out_path(date, f"webseiten_{country}", ".md", "P856"))
+    return summary

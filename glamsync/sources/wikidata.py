@@ -481,6 +481,50 @@ SELECT DISTINCT ?c WHERE {{ VALUES ?c {{ {" ".join(f"wd:{c}" for c in chunk)} }}
                 log.info("Klassenprüfung: %d/%d Klassen", min(i * batch, len(classes)), len(classes))
         return out
 
+    def without_en_mul(self, country: str, type_qid: str) -> list[str]:
+        """Items mit P31/P279* = Typ und P17 = Land, die weder ein en- noch ein mul-Label haben."""
+        rows = self.query(f"""
+SELECT DISTINCT ?item WHERE {{ ?item wdt:P31/wdt:P279* wd:{type_qid} ; wdt:P17 wd:{country} .
+  FILTER NOT EXISTS {{ ?item rdfs:label ?l FILTER(LANG(?l) IN ("en", "mul")) }} }}""")
+        return sorted({_strip(r["item"]) for r in rows}, key=lambda q: int(q[1:]))
+
+    def country_languages(self, countries: Iterable[str]) -> dict[str, set[str]]:
+        """Staat → Wikimedia-Sprachcodes (P424) seiner Amtssprachen (P37)."""
+        out: dict[str, set[str]] = defaultdict(set)
+        for chunk in _chunks(sorted(set(countries)), 100):
+            rows = self.query(f"""
+SELECT ?c ?code WHERE {{ VALUES ?c {{ {" ".join(f"wd:{c}" for c in chunk)} }} ?c wdt:P37 ?l . ?l wdt:P424 ?code . }}""")
+            for r in rows:
+                out[_strip(r["c"])].add(r["code"])
+        return dict(out)
+
+    def official_names(self, qids: Iterable[str], lang: str = "en", batch: int = 300) -> dict[str, list[str]]:
+        """QID → offizielle Namen (P1448, beste Ränge) in einer Sprache."""
+        out: dict[str, list[str]] = defaultdict(list)
+        for chunk in _chunks(sorted(set(qids)), batch):
+            rows = self.query(f"""
+SELECT ?item ?n WHERE {{ VALUES ?item {{ {" ".join(f"wd:{q}" for q in chunk)} }}
+  ?item wdt:P1448 ?n . FILTER(LANG(?n) = {_lit(lang)}) }}""")
+            for r in rows:
+                out[_strip(r["item"])].append(r["n"])
+        return dict(out)
+
+    def terms(self, qids: Iterable[str], batch: int = 50) -> dict[str, dict]:
+        """Über die Wikidata-API (aktuell): QID → {labels: {sprache: label}, aliases: {sprache: [alias]}}."""
+        out: dict[str, dict] = {}
+        qids = sorted(set(qids))
+        for i, chunk in enumerate(_chunks(qids, batch), 1):
+            d = self.client.get_json(config.WIKIDATA_API, params={
+                "action": "wbgetentities", "ids": "|".join(chunk), "props": "labels|aliases", "format": "json"})
+            for q, e in (d or {}).get("entities", {}).items():
+                if "missing" in e:
+                    continue
+                out[q] = {"labels": {k: x["value"] for k, x in e.get("labels", {}).items()},
+                          "aliases": {k: [x["value"] for x in v] for k, v in e.get("aliases", {}).items()}}
+            if i % 20 == 0:
+                log.info("Bezeichnungen: %d/%d Items", min(i * batch, len(qids)), len(qids))
+        return out
+
     def resolve_redirects(self, qids: Iterable[str], batch: int = 200) -> dict[str, str]:
         """QID → Ziel-QID für Weiterleitungen."""
         qids = sorted(set(qids))

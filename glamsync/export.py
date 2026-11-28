@@ -16,7 +16,6 @@ from .sources.wikidata import SOURCE_ITEMS
 log = logging.getLogger(__name__)
 
 BLOCK_SIZE = 500  # Zeilen je QS-Datei
-QS_PREFIX = "qs_"
 QS_EXT = ".txt"
 ACTION_LABELS = {"new": "neu", "fix": "korrektur", "delete": "loeschen"}
 PROP_NAMES = {"P7704": "Europeana entity", "P791": "ISIL", "P227": "GND", "P214": "VIAF", "P213": "ISNI"}
@@ -24,6 +23,20 @@ PROP_NAMES = {"P7704": "Europeana entity", "P791": "ISIL", "P227": "GND", "P214"
 
 def today() -> str:
     return dt.date.today().isoformat()
+
+
+# --- Dateinamen in out/ -----------------------------------------------------------------
+# Datum vorn, danach die Property (bei QuickStatements immer, bei Berichten, die zu genau einer
+# Property gehören), dann der Rest: So stehen die Dateien eines Laufs und einer Property im
+# Ordner beieinander. QuickStatements: <datum>_<P>_<…>_partNN.txt, Berichte: <datum>_[<P>_]<name>.<ext>
+def qs_stem(date: str, prop: str, *parts: str) -> str:
+    """Stamm einer QS-Datei ohne _partNN.txt, z. B. 2026-11-28_P856_Q183_neu."""
+    return "_".join([date, prop, *[x for x in parts if x]])
+
+
+def out_path(date: str, name: str, ext: str, prop: str = "", out_dir: Path | None = None) -> Path:
+    """Berichtsdatei <datum>_[<P>_]<name><ext> in out/, z. B. 2026-11-28_P856_webseiten_Q183.csv."""
+    return (out_dir or config.OUT_DIR) / ("_".join(x for x in (date, prop, name) if x) + ext)
 
 
 def _qs_string(v: str) -> str:
@@ -87,7 +100,7 @@ def split_parts(groups: list[list[str]], size: int = BLOCK_SIZE) -> list[list[st
 
 def write_qs(findings: list[Finding], prop: str, action: str, date: str | None = None,
              out_dir: Path | None = None, tag: str = "", label: str | None = None) -> list[Path]:
-    """Schreibt QS-Dateien in Teilen à max. BLOCK_SIZE Zeilen (qs_…_part01.txt usw.).
+    """Schreibt QS-Dateien in Teilen à max. BLOCK_SIZE Zeilen (<datum>_<P>_…_part01.txt usw.).
 
     `tag` unterscheidet weitere Abgleiche im Dateinamen, z. B. 'staedte_Q183';
     `label` ersetzt die Aktionsbezeichnung (z. B. 'loeschen_pruefen').
@@ -96,7 +109,7 @@ def write_qs(findings: list[Finding], prop: str, action: str, date: str | None =
     out_dir = out_dir or config.OUT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     label = label or ACTION_LABELS[action]
-    stem = f"{QS_PREFIX}{prop}_{tag + '_' if tag else ''}{label}_{date}"
+    stem = qs_stem(date, prop, tag, label)
     for old in out_dir.glob(f"{stem}_part*{QS_EXT}"):
         old.unlink()
     paths = []
@@ -200,13 +213,14 @@ def write_registry_qs(matches, prop: str, source: str, country: str, date: str,
     from .registry import STARK
 
     out_dir = out_dir or config.OUT_DIR
-    for old in out_dir.glob(f"{QS_PREFIX}{prop}_kandidaten_{country}_{date}_part*{QS_EXT}"):
+    stem = qs_stem(date, prop, "kandidaten", country)
+    for old in out_dir.glob(f"{stem}_part*{QS_EXT}"):
         old.unlink()
     groups = [[f"{m.qids[0]}|{prop}|{_qs_string(m.record.value)}{_registry_reference(m.record.source, m.record.url, date)}"]
               for m in matches if m.status == STARK]
     paths = []
     for i, lines in enumerate(split_parts(groups), 1):
-        p = out_dir / f"{QS_PREFIX}{prop}_kandidaten_{country}_{date}_part{i:02d}{QS_EXT}"
+        p = out_dir / f"{stem}_part{i:02d}{QS_EXT}"
         p.write_text("\n".join(lines) + "\n", encoding="utf-8")
         paths.append(p)
     return paths
@@ -214,7 +228,7 @@ def write_registry_qs(matches, prop: str, source: str, country: str, date: str,
 
 def write_registry_sure_qs(matches, prop: str, source: str, country: str, date: str,
                            out_dir: Path | None = None) -> list[Path]:
-    """Sichere Kandidaten (Ort gleich, Label sehr ähnlich) → qs_<P>_<quelle>_<land>_neu_<datum>_partNN.txt."""
+    """Sichere Kandidaten (Ort gleich, Label sehr ähnlich) → <datum>_<P>_<quelle>_<land>_neu_partNN.txt."""
     from .registry import SICHER
 
     groups = [[f"{m.qids[0]}|{prop}|{_qs_string(m.record.value)}{_registry_reference(m.record.source, m.record.url, date)}"]
@@ -261,7 +275,8 @@ def write_registry_delete_qs(cleanup, prop: str, country: str, date: str, out_di
     out_dir = out_dir or config.OUT_DIR
     paths = []
     for kind, label in (("ungueltig", "loeschen"), ("nicht_im_register", "loeschen_pruefen")):
-        for old in out_dir.glob(f"{QS_PREFIX}{prop}_{label}_{country}_{date}_part*{QS_EXT}"):
+        stem = qs_stem(date, prop, label, country)
+        for old in out_dir.glob(f"{stem}_part*{QS_EXT}"):
             old.unlink()
         groups, seen = [], set()
         for c in cleanup:
@@ -270,7 +285,7 @@ def write_registry_delete_qs(cleanup, prop: str, country: str, date: str, out_di
                 seen.add(line)
                 groups.append([line])
         for i, lines in enumerate(split_parts(groups), 1):
-            p = out_dir / f"{QS_PREFIX}{prop}_{label}_{country}_{date}_part{i:02d}{QS_EXT}"
+            p = out_dir / f"{stem}_part{i:02d}{QS_EXT}"
             p.write_text("\n".join(lines) + "\n", encoding="utf-8")
             paths.append(p)
     return paths
@@ -447,17 +462,17 @@ MNM_COLUMNS = ["id", "name", "description", "url", "type"]
 
 
 def write_mnm(rows: dict, date: str, out_dir: Path | None = None, lands=None) -> list[tuple[Path, int]]:
-    """mnm_gnd_<typ>_<land>_<datum>.csv mit Kopfzeile id,name,description,url,type (Mix'n'match-Import)."""
+    """<datum>_P227_mnm_gnd_<typ>_<land>.csv mit Kopfzeile id,name,description,url,type (Mix'n'match-Import)."""
     out_dir = out_dir or config.OUT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     # Nur eigene Dateien (je Typ) ersetzen; selbst zusammengestellte Dateien bleiben stehen
     for land in lands or {k[1] for k in rows}:
         for typ in GND_TYPE_NAMES:
             for ext in (".tsv", ".csv"):
-                (out_dir / f"mnm_gnd_{typ}_{land}_{date}{ext}").unlink(missing_ok=True)
+                out_path(date, f"mnm_gnd_{typ}_{land}", ext, "P227", out_dir).unlink(missing_ok=True)
     paths = []
     for (typ, land), lines in sorted(rows.items()):
-        p = out_dir / f"mnm_gnd_{typ}_{land}_{date}.csv"
+        p = out_path(date, f"mnm_gnd_{typ}_{land}", ".csv", "P227", out_dir)
         with p.open("w", newline="", encoding="utf-8") as fh:
             # Felder mit Komma oder Anführungszeichen werden in "…" gesetzt (Quote verdoppelt)
             w = csv.DictWriter(fh, fieldnames=MNM_COLUMNS, delimiter=",", lineterminator="\n")
@@ -533,10 +548,10 @@ TERM_KINDS = {"Lde": "Label", "Dde": "Beschreibung", "Ade": "Alias"}
 
 def write_qs_groups(groups: list[list[str]], prop: str, tag: str, label: str, date: str,
                     out_dir: Path | None = None) -> list[Path]:
-    """Fertige Befehlsgruppen als qs_<prop>_<tag>_<label>_<datum>_partNN.txt (je ≤ BLOCK_SIZE Zeilen)."""
+    """Fertige Befehlsgruppen als <datum>_<prop>_<tag>_<label>_partNN.txt (je ≤ BLOCK_SIZE Zeilen)."""
     out_dir = out_dir or config.OUT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = f"{QS_PREFIX}{prop}_{tag}_{label}_{date}"
+    stem = qs_stem(date, prop, tag, label)
     for old in out_dir.glob(f"{stem}_part*{QS_EXT}"):
         old.unlink()
     paths = []
@@ -558,6 +573,19 @@ def write_terms_report(proposals, path: Path) -> None:
             if p.has_changes or p.note:
                 w.writerow([p.qid, "|".join(p.gnd), p.label_now, p.label, p.description_now, p.description,
                             " | ".join(p.aliases), p.note])
+
+
+def write_label_report(proposals, path: Path, country_names: dict[str, str] | None = None) -> None:
+    """Bericht zu `labels --source wikidata`: alle Items mit Vorschlag oder Hinweis."""
+    names = country_names or {}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh, delimiter=";")
+        w.writerow(["qid", "land", "labels_wikidata", "mul_neu", "en_neu", "en_quelle", "europeana", "hinweis"])
+        for p in proposals:
+            w.writerow([p.qid, ", ".join(names.get(c, c) for c in p.countries),
+                        " | ".join(f"{k}: {v}" for k, v in sorted(p.labels_now.items())), p.mul, p.en,
+                        p.en_source, " ".join(f"organisation/{n}" for n in p.europeana), p.note])
 
 
 # --- Organisationen: Europeana ↔ Wikidata europaweit -------------------------------
@@ -613,4 +641,64 @@ def write_org_summary(s: dict, path: Path) -> None:
     L += ["", "Mit `#` beginnende Zeilen (`…_pruefen_…`, schwache Kandidaten) sind auskommentiert: geprüfte",
           "Befehlszeilen entkommentieren, dann alle übrigen `#`-Zeilen entfernen (`grep -v '^#'`) und erst",
           "danach einspielen. QuickStatements dokumentiert `#`-Zeilen im V1-Format nicht als Kommentar."]
+    path.write_text("\n".join(L) + "\n", encoding="utf-8")
+
+
+# --- Websites (P856) ------------------------------------------------------------------------
+WEBSITE_STATUS_MEANING = {
+    "neu": "erreichbar, an keinem anderen Item, Name im Seitentitel oder in der Adresse → `…_neu_…`",
+    "pruefen": "erreichbar ohne Namensnachweis (oder nur Ortsname auf Gemeinde-Startseite), oder Umzug auf "
+               "andere Domain mit Namensnachweis → `…_pruefen_…`, auskommentiert",
+    "umgeleitet": "auf andere Domain umgeleitet, Name nicht im Titel – Bericht",
+    "tot": "404/410, Domain unbekannt, Park- oder Fehlerseite – Bericht",
+    "unklar": "401/403/429/5xx, Zeitüberschreitung, Bot-Schutz – Bericht, später erneut prüfen",
+    "geteilt": "Adresse ist P856 eines anderen Items oder Kandidat für mehrere Items – Bericht",
+    "widerspruch": "erreichbare Adressen auf verschiedenen Domains – Bericht",
+    "aufgeloest": "P576 am Item oder GND-Satz aufgelöst – Bericht",
+    "veraltet_in_wikidata": "Adresse steht am Item schon mit Rang „veraltet“ – Bericht",
+    "ungueltig": "keine verwertbare Adresse (Leerzeichen, kaputte Umlaute, Datei, soziales Netzwerk) – Bericht",
+}
+
+
+def write_website_report(proposals, path: Path) -> None:
+    """Eine Zeile je Item mit Quell-Adresse; `adressen` = Zustand jeder Quell-Adresse."""
+    cols = ["status", "qid", "label", "wert", "sprache", "fundstellen", "nachweis", "seitentitel", "hinweis", "adressen"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh, delimiter=";")
+        w.writerow(cols)
+        for p in proposals:
+            w.writerow([p.status, p.qid, p.label, p.value, p.lang, " ".join(f"{s.source}:{s.key}" for s in p.sources),
+                        p.evidence, p.title, p.note, " | ".join(f.describe() for f in p.urls)])
+
+
+def write_website_summary(s: dict, path: Path) -> None:
+    pct = lambda n, d: f"{n / d:.0%}" if d else "–"  # noqa: E731
+    L = [
+        f"# Websites (P856): {s['country']} ({s['date']})",
+        "",
+        f"- Pool (Museum/Bibliothek/Archiv): **{s['pool']}** Items, mit P856 {s['with_p856']} "
+        f"({pct(s['with_p856'], s['pool'])}), ohne {s['without_p856']}",
+        f"- ohne P856, aber mit Adresse in einer Quelle: **{s['items']}** Items, {s['urls']} geprüfte Adressen",
+        "- Quell-Adressen: " + ", ".join(f"{k} {v}" for k, v in s["sources"].items()),
+        f"- Vorschläge mit mehreren Quellen (je Quelle eine Fundstelle): {s['multi_source']}; "
+        f"gleicher Vorschlag für mehrere Items → geteilt: {s['collisions']}",
+        "- Namensnachweis: " + ", ".join(f"{k} {v}" for k, v in s["evidence"].items()),
+        "- P407 (Sprache aus `<html lang>`, nur Landessprachen): " + ", ".join(f"{k} {v}" for k, v in s["p407"].items()),
+        "",
+        "## Status je Item",
+        "",
+        "| Status | Anzahl | Bedeutung |",
+        "|---|---:|---|",
+    ]
+    L += [f"| {k} | {v} | {WEBSITE_STATUS_MEANING.get(k, '')} |" for k, v in s["status"].items()] or ["| – | 0 | |"]
+    L += ["", "## Zustand der Quell-Adressen", "", "| Zustand | Anzahl |", "|---|---:|"]
+    L += [f"| {k} | {v} |" for k, v in s["url_states"].items()]
+    L += ["", "## Vorschläge nach erster Fundstelle", "", "| Quelle | neu | pruefen |", "|---|---:|---:|"]
+    srcs = sorted(set(s["first_source"]["neu"]) | set(s["first_source"]["pruefen"]))
+    L += [f"| {k} | {s['first_source']['neu'].get(k, 0)} | {s['first_source']['pruefen'].get(k, 0)} |" for k in srcs]
+    L += ["", "## QuickStatements", ""] + ([f"- `{f}`" for f in s["files"]] or ["- keine"])
+    L += ["", f"Bericht: `{s['report']}`.", "",
+          "Mit `#` beginnende Zeilen (`…_pruefen_…`) sind auskommentiert: geprüfte Befehlszeilen entkommentieren,",
+          "dann alle übrigen `#`-Zeilen entfernen (`grep -v '^#'`) und erst danach einspielen."]
     path.write_text("\n".join(L) + "\n", encoding="utf-8")

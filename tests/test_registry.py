@@ -136,8 +136,8 @@ def test_registry_delete_qs(tmp_path):
           Cleanup("Q4", "DE-MUS", "ungueltig", None)]
     paths = write_registry_delete_qs(cs, "P791", "Q183", "2026-11-16", tmp_path)
     assert {p.name: p.read_text() for p in paths} == {
-        "qs_P791_loeschen_Q183_2026-11-16_part01.txt": '-Q3|P791|"DE-MUS"\n',
-        "qs_P791_loeschen_pruefen_Q183_2026-11-16_part01.txt": '-Q2|P791|"DE-999"\n',
+        "2026-11-16_P791_loeschen_Q183_part01.txt": '-Q3|P791|"DE-MUS"\n',
+        "2026-11-16_P791_loeschen_pruefen_Q183_part01.txt": '-Q2|P791|"DE-999"\n',
     }
 
 
@@ -159,7 +159,7 @@ def test_isil_record_parsing():
 def test_registry_qs(tmp_path):
     m = classify_registry([rec("M10072", "Weltmuseum Wien", "weltmuseumwien.at")], P, {}, {})
     [path] = write_registry_qs(m, "P7917", "mure", "Q40", "2026-11-16", tmp_path)
-    assert path.name == "qs_P7917_kandidaten_Q40_2026-11-16_part01.txt"
+    assert path.name == "2026-11-16_P7917_kandidaten_Q40_part01.txt"
     assert path.read_text().strip() == (
         'Q1|P7917|"M10072"|S854|"https://museen-in-oesterreich.at/museum/m10072/"|S813|+2026-11-16T00:00:00Z/11')
 

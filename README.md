@@ -78,13 +78,24 @@ Weitere Optionen: `--types museum,library,archive`, `--sources europeana,ddb`, `
 
 ### Ausgabe (`out/`)
 
+**Dateinamen** beginnen mit dem Datum, danach folgt die Property. So stehen die Dateien eines Laufs
+und einer Property im Ordner beieinander (seit 28.11.2026; vorher `qs_<P>_…_<datum>_partNN.txt` bzw.
+`<name>_<datum>.<ext>`):
+
+- QuickStatements: `<datum>_<P>_<…>_partNN.txt`, z. B. `2026-11-28_P856_Q183_neu_part01.txt`
+  (für Labels steht statt der Property die Art: `Lde`, `Dde`, `Ade`, `Lmul`, `Len`);
+- Berichte zu genau einer Property: `<datum>_<P>_<name>.<ext>`, z. B. `2026-11-28_P856_webseiten_Q183.csv`;
+- Berichte zu mehreren Properties: `<datum>_<name>.<ext>`, z. B. `2026-11-24_anreicherung_gnd_Q183.csv`.
+
+Zwischenstände unter `data/` (z. B. `gnd_results_<land>_<datum>.json`) behalten ihre Namen.
+
 | Datei | Inhalt |
 |---|---|
-| `summary_<datum>.md` | Zählungen: Grundmenge vorher → nachher-Potenzial, Zuordnung, Klassifikation, QS-Umfang |
-| `report_<datum>.csv` | eine Zeile je Quell-Einrichtung (Klassifikation je Property, Trefferquelle) plus Zeilen `nur_wikidata` für reine Formatbefunde; Trennzeichen `;` |
-| `kandidaten_namen_<datum>.csv` | nicht zugeordnete Einrichtungen mit ähnlich benannten Items, **nur zur Handprüfung** |
-| `qs_<P>_{neu,korrektur,loeschen}_<datum>_partNN.txt` | max. 500 Zeilen je Datei; Korrekturpaare (Löschen + Neu) werden nicht getrennt; `loeschen` = ungültige Werte |
-| `results_<datum>.json` | vollständige Ergebnisse, Grundlage für `export-qs` |
+| `<datum>_summary.md` | Zählungen: Grundmenge vorher → nachher-Potenzial, Zuordnung, Klassifikation, QS-Umfang |
+| `<datum>_report.csv` | eine Zeile je Quell-Einrichtung (Klassifikation je Property, Trefferquelle) plus Zeilen `nur_wikidata` für reine Formatbefunde; Trennzeichen `;` |
+| `<datum>_kandidaten_namen.csv` | nicht zugeordnete Einrichtungen mit ähnlich benannten Items, **nur zur Handprüfung** |
+| `<datum>_<P>_{neu,korrektur,loeschen}_partNN.txt` | max. 500 Zeilen je Datei; Korrekturpaare (Löschen + Neu) werden nicht getrennt; `loeschen` = ungültige Werte |
+| `<datum>_results.json` | vollständige Ergebnisse, Grundlage für `export-qs` |
 
 Beispiel für eine neue Aussage mit Quellenangabe:
 
@@ -99,7 +110,7 @@ Zuordnung einer Einrichtung zu einem Wikidata-Item, in dieser Reihenfolge:
 1. Europeana `sameAs` → Wikidata-QID (Weiterleitungen werden aufgelöst)
 2. ISIL (P791), exakt, ohne Beachtung der Groß-/Kleinschreibung
 3. GND (P227), exakt
-4. Kein automatischer Namensabgleich, ähnliche Namen nur in `kandidaten_namen_<datum>.csv`
+4. Kein automatischer Namensabgleich, ähnliche Namen nur in `<datum>_kandidaten_namen.csv`
 
 Klassifikation je Property:
 
@@ -121,7 +132,7 @@ gibt; dann wird Europeana als Fundstelle gesetzt.
 
 **Ungültige Werte** (nicht reparierbares Format, z. B. Objekt-IDs `item/…` in P7704, die zu P727
 gehören, Werte ohne Präfix, `DE-MUS` ohne Nummer) werden **zur Löschung vorgeschlagen**
-(`qs_<P>_loeschen_<datum>_partNN.txt`, Aktion `delete`), sofern die Aussage weder
+(`<datum>_<P>_loeschen_partNN.txt`, Aktion `delete`), sofern die Aussage weder
 Quellen noch Qualifier hat; sonst nur Bericht. Objekt-IDs ggf. vorher nach P727 übertragen.
 Dubletten (ein P7704-Wert an mehreren Items) erscheinen nur im Bericht; für sie gibt es auch
 keine Formatkorrektur.
@@ -146,7 +157,7 @@ werden über den exakten Schlüssel erkannt. Für fehlende Werte gibt es nur Kan
 |---|---|---|
 | `vorhanden` | Wert steht an genau einem Item | – |
 | `vorhanden_pruefen` | Wert vorhanden, Name passt kaum (Ähnlichkeit < 0,5) | Bericht |
-| `kandidat_stark` | Item **ohne** diesen Wert mit **gleichem Namen UND gleicher Website** | `qs_<P>_kandidaten_<land>_<datum>_partNN.txt` – **nur nach Handprüfung einspielen** |
+| `kandidat_stark` | Item **ohne** diesen Wert mit **gleichem Namen UND gleicher Website** | `<datum>_<P>_kandidaten_<land>_partNN.txt` – **nur nach Handprüfung einspielen** |
 | `kandidat_schwach` | nur Name gleich, oder Website gleich + Name ähnlich, oder Name ähnlich + < 1 km | nur CSV |
 | `konflikt` | starker Kandidat hat schon einen anderen Wert | Bericht |
 | `mehrdeutig` | Wert an mehreren Items, oder ein Item ist starker Kandidat für mehrere Einträge | Bericht |
@@ -164,10 +175,10 @@ Kandidaten-Pool sind die Wikidata-Items des Landes mit P31/P279* = Museum/Biblio
 
 | Fall | QuickStatement |
 |---|---|
-| Wert hat ungültiges Format | `qs_<P>_loeschen_<land>_<datum>_partNN.txt` |
-| Wert fehlt im Register | `qs_<P>_loeschen_pruefen_<land>_<datum>_partNN.txt` – **vor dem Löschen prüfen**: kann eine aufgelöste Einrichtung (historisch korrekter Wert) oder ein Tippfehler sein |
+| Wert hat ungültiges Format | `<datum>_<P>_loeschen_<land>_partNN.txt` |
+| Wert fehlt im Register | `<datum>_<P>_loeschen_pruefen_<land>_partNN.txt` – **vor dem Löschen prüfen**: kann eine aufgelöste Einrichtung (historisch korrekter Wert) oder ein Tippfehler sein |
 
-Ausgabe in `out/`: `register_<quelle>_<land>_<datum>.md` (Zusammenfassung), `….csv` (alle
+Ausgabe in `out/`: `<datum>_<P>_register_<quelle>_<land>.md` (Zusammenfassung), `….csv` (alle
 Register-Einträge), `…_bereinigung.csv` (ungültige bzw. im Register fehlende Wikidata-Werte).
 
 Ergebnis 16.11.2026 (Kandidaten-Pool mit Unterklassen):
@@ -280,7 +291,7 @@ andere Abläufe solche Werte nicht zur Löschung vorschlagen.
 |---|---|---|
 | `vorhanden` | GND steht an genau einem Item (P227, ganz Wikidata) | – |
 | `vorhanden_alt` | eine umgelenkte alte GND der Einrichtung steht an einem Item | Bericht |
-| `kandidat_sicher` | aus stark/schwach: genau ein Item ohne P227, Ort gleich, ein GND-Name ist einem **Label** (nicht Alias) sehr ähnlich (kompakt ≥ 0,95, Ortsname darf fehlen); kein anderer sicherer Kandidat für dasselbe Item | `qs_P227_gnd_<land>_neu_<datum>_partNN.txt`, nicht in Mix'n'match |
+| `kandidat_sicher` | aus stark/schwach: genau ein Item ohne P227, Ort gleich, ein GND-Name ist einem **Label** (nicht Alias) sehr ähnlich (kompakt ≥ 0,95, Ortsname darf fehlen); kein anderer sicherer Kandidat für dasselbe Item | `<datum>_P227_gnd_<land>_neu_partNN.txt`, nicht in Mix'n'match |
 | `kandidat_stark` | genau ein Pool-Item mit **gleichem Namen UND gleichem Ort**, ohne P227 | CSV, Handprüfung |
 | `konflikt` | der starke Kandidat hat schon eine andere P227 (Vorgänger, Untereinheit, GND-Dublette?) | Bericht |
 | `mehrdeutig` | GND an mehreren Items, mehrere starke Kandidaten, oder ein Item ist starker Kandidat für mehrere GND | Bericht |
@@ -353,7 +364,7 @@ Bereits als `deprecated` markierte Aussagen bleiben unberührt.
 
 Aufspaltungen (mehrere Ziele) werden nie automatisch bearbeitet; die Datei enthält derzeit keine.
 
-**Mix'n'match** (`out/mnm_gnd_<typ>_<land>_<datum>.csv`, je Typ und Land). Aufgenommen werden
+**Mix'n'match** (`out/<datum>_P227_mnm_gnd_<typ>_<land>.csv`, je Typ und Land). Aufgenommen werden
 alle Einrichtungen, deren GND weder aktuell noch als alte ID in Wikidata steht, also auch
 Kandidaten, Konflikte und Fälle ohne Treffer. Ohne `--include-historical` fehlen historische
 Einrichtungen und frühere Namensformen. Die Datei hat eine Kopfzeile und folgende Spalten:
@@ -386,14 +397,14 @@ geprüft werden, und die Koordinaten der GND bezeichnen nur den Ortsmittelpunkt.
 
 **Ausgabe:**
 
-- `out/register_gnd_<land>_<datum>.md` – Zusammenfassung mit GND-Zahlen (Dump, Einrichtungen je
+- `out/<datum>_P227_register_gnd_<land>.md` – Zusammenfassung mit GND-Zahlen (Dump, Einrichtungen je
   Typ/Land und Anteil mit Wikidata-Link, Status, Mix'n'match-Dateien)
-- `out/register_gnd_<land>_<datum>.csv` – Kandidatenliste/Bericht, eine Zeile je Einrichtung
-- `out/register_gnd_<land>_<datum>_formatfehler.csv` – P227-Formatbefunde im Pool
-- `out/register_gnd_<land>_<datum>_umlenkungen.csv` – P227 auf umgelenkte/gelöschte GND
-- `out/qs_P227_gnd_<land>_korrektur_<datum>_partNN.txt` – Korrekturen (je 500 Zeilen)
-- `out/qs_P227_gnd_<land>_zeitraum_<datum>_partNN.txt` – Qualifikatoren P580/P582, nur mit `--propose-dates`
-- `out/mnm_gnd_<typ>_<land>_<datum>.csv` – Mix'n'match
+- `out/<datum>_P227_register_gnd_<land>.csv` – Kandidatenliste/Bericht, eine Zeile je Einrichtung
+- `out/<datum>_P227_register_gnd_<land>_formatfehler.csv` – P227-Formatbefunde im Pool
+- `out/<datum>_P227_register_gnd_<land>_umlenkungen.csv` – P227 auf umgelenkte/gelöschte GND
+- `out/<datum>_P227_gnd_<land>_korrektur_partNN.txt` – Korrekturen (je 500 Zeilen)
+- `out/<datum>_P227_gnd_<land>_zeitraum_partNN.txt` – Qualifikatoren P580/P582, nur mit `--propose-dates`
+- `out/<datum>_P227_mnm_gnd_<typ>_<land>.csv` – Mix'n'match
 - `data/gnd_results_<land>_<datum>.json` – Grundlage für `export-mnm`
 
 **Ergebnis 21.11.2026 (Q183, Kandidaten-Pool 17.146 Items).** 10.257 Einrichtungen: 9.788 DE,
@@ -478,17 +489,17 @@ Aliassen (de/mul). Daraus entstehen QuickStatements, die nur **ergänzen**:
   Sprachen („Museum“, „Berlin“), Eigennamen („Folkwang“, „Selma“) und Abkürzungen entscheiden nichts.
   Benötigt `hunspell` mit `de_DE` (und `en_US`/`en_GB`); weitere Sprachen über eine Wortliste und
   Buchstaben außerhalb des deutschen Alphabets.
-- **Bereits eingespielte fremdsprachige Aliase entfernen:** `qs_Ade_gnd_Q183_loeschen_<datum>_partNN.txt`
+- **Bereits eingespielte fremdsprachige Aliase entfernen:** `<datum>_Ade_gnd_Q183_loeschen_partNN.txt`
   mit `-Q…<TAB>Ade<TAB>"Alias"` (QuickStatements entfernt genau diesen einen Alias über
-  `wbsetaliases remove`); Prüfliste `aliase_fremdsprachig_gnd_Q183_<datum>.csv`.
+  `wbsetaliases remove`); Prüfliste `<datum>_Ade_aliase_fremdsprachig_gnd_Q183.csv`.
 - **Eindeutigkeit:** Wikidata verlangt Label + Beschreibung je Sprache eindeutig. Ergäbe sich
   dasselbe Paar für mehrere Items im Lauf, entfällt die Beschreibung. Kollisionen mit Items
   außerhalb des Laufs meldet erst QuickStatements.
 - Für Werte gibt es keine Fundstellen. Werte mit Anführungszeichen werden ausgelassen.
 - Direkt nach dem Einspielen erneut ausführen: `GLAMSYNC_WIKIDATA_CACHE_HOURS=0` setzen.
 
-Ausgabe: `out/qs_{Lde,Dde,Ade}_gnd_<land>_neu_<datum>_partNN.txt` (je 500 Zeilen) und
-`out/bezeichnungen_gnd_<land>_<datum>.csv` (Vorschläge und Hinweise je Item).
+Ausgabe: `out/<datum>_{Lde,Dde,Ade}_gnd_<land>_neu_partNN.txt` (je 500 Zeilen) und
+`out/<datum>_bezeichnungen_gnd_<land>.csv` (Vorschläge und Hinweise je Item).
 
 **Ergebnis 21.11.2026 (Q183):** 3.279 Items tragen eine GND aus der Tabelle. Vorschläge:
 8 Labels, 253 Beschreibungen, 4.934 Aliase an 1.893 Items. 195 Hinweise: 178 × „P31 ist kein
@@ -533,11 +544,11 @@ python -m glamsync cities --country Q183,Q40,Q39 --min-population 50000
   (`isAggregatedBy.recordCount`), bekommt er wie bei den Personen den Status
   `fehlt_ohne_objekte` und landet in einer eigenen QS-Datei (zunächst nicht einspielen).
 - **Ausgabe:**
-  - `out/staedte_<land|europa>_<datum>.csv` (Bericht mit Länderspalte) und
-    `out/staedte_<land|europa>_<datum>.md` (Zusammenfassung mit Tabelle je Land und Dublettenliste);
-  - `out/qs_P7704_staedte_<land>_{neu,korrektur,loeschen}_<datum>_partNN.txt`,
+  - `out/<datum>_P7704_staedte_<land|europa>.csv` (Bericht mit Länderspalte) und
+    `out/<datum>_P7704_staedte_<land|europa>.md` (Zusammenfassung mit Tabelle je Land und Dublettenliste);
+  - `out/<datum>_P7704_staedte_<land>_{neu,korrektur,loeschen}_partNN.txt`,
     Fundstelle S248 Europeana (Q234110) + S813;
-  - `out/qs_P7704_staedte_<land>_ohne_objekte_<datum>_partNN.txt` – Orte ohne Objekte.
+  - `out/<datum>_P7704_staedte_<land>_ohne_objekte_partNN.txt` – Orte ohne Objekte.
 
 **Ergebnis 16.11.2026 (Europa, 51 Länder, 802 Städte):**
 
@@ -626,12 +637,12 @@ In beiden Fällen gilt: nur ohne Quellen/Qualifier, sonst nur Bericht.
 
 **Ausgabe.**
 
-- `out/qs_P7704_personen_neu_<datum>_partNN.txt` – nur Agents mit mindestens einem Objekt in Europeana
-- `out/qs_P7704_personen_ohne_objekte_<datum>_partNN.txt` – Agents ohne Objekte (`fehlt_ohne_objekte`);
+- `out/<datum>_P7704_personen_neu_partNN.txt` – nur Agents mit mindestens einem Objekt in Europeana
+- `out/<datum>_P7704_personen_ohne_objekte_partNN.txt` – Agents ohne Objekte (`fehlt_ohne_objekte`);
   formal korrekt, die Europeana-Seite zeigt aber keine Treffer – **zunächst nicht einspielen**
-- `out/qs_P227_personen_neu_<datum>_partNN.txt`
-- `out/qs_P7704_personen_korrektur_<datum>_partNN.txt` und `…_personen_loeschen_pruefen_…`
-- `out/personen_<datum>.csv` (nur Abweichungen) und `out/personen_<datum>.md` (Zusammenfassung)
+- `out/<datum>_P227_personen_neu_partNN.txt`
+- `out/<datum>_P7704_personen_korrektur_partNN.txt` und `…_personen_loeschen_pruefen_…`
+- `out/<datum>_personen.csv` (nur Abweichungen) und `out/<datum>_personen.md` (Zusammenfassung)
 
 Alle Vorschläge haben die Fundstelle S248 Europeana (Q234110) + S813.
 
@@ -697,7 +708,7 @@ Europeana-Organisationen ab, unabhängig vom Land und vom Typ, und nur mit Europ
 | `kein_organisation` | P31 liegt nicht unter Organisation (Q43229), z. B. Palast, Kirchengebäude, Zeitschrift; oder das Item hat eine Einwohnerzahl (P1082), ist also das Gebiet (Gemeinde, Region) und nicht die Verwaltung | Bericht |
 | `mehrdeutig` | Europeana-Dublette ohne Favorit (nach Objekten), Wert an anderem Item, mehrere QIDs | Bericht |
 | `abgelehnt_in_wikidata` | derselbe Wert steht am Item mit Rang „veraltet“ | Bericht |
-| `fehlt_in_wikidata` | Organisation, **ein Name gleich**, Objekte > 0 | `qs_P7704_organisationen_neu_…` |
+| `fehlt_in_wikidata` | Organisation, **ein Name gleich**, Objekte > 0 | `<datum>_P7704_organisationen_neu_…` |
 | `fehlt_ohne_objekte` | ebenso, aber 0 Objekte in Europeana | `…_ohne_objekte_…` (zunächst nicht einspielen) |
 | `name_pruefen` | sonst passend, aber **kein Name gleich** | `…_pruefen_…`, **auskommentiert** |
 
@@ -754,9 +765,9 @@ längere Pause (HTTP 429 mit Retry-After), wartet `organisations` sie ab (höchs
 zwei Wiederholungen). Eine fehlende Antwort könnte sonst einen Kandidaten fälschlich eindeutig
 machen. Die anderen Kommandos brechen weiterhin nach 40 s ab.
 
-**Ausgabe:** `out/organisationen_<datum>.csv` (eine Zeile je Befund, Spalte `datei` nennt die
-QS-Datei, `(#)` = auskommentiert), `out/organisationen_<datum>.md` (Zusammenfassung mit
-Tabelle nach Land), `out/qs_P7704_organisationen_{neu,ohne_objekte,pruefen,kandidaten,kandidaten_ohne_objekte,korrektur,loeschen}_<datum>_partNN.txt`.
+**Ausgabe:** `out/<datum>_P7704_organisationen.csv` (eine Zeile je Befund, Spalte `datei` nennt die
+QS-Datei, `(#)` = auskommentiert), `out/<datum>_P7704_organisationen.md` (Zusammenfassung mit
+Tabelle nach Land), `out/<datum>_P7704_organisationen_{neu,ohne_objekte,pruefen,kandidaten,kandidaten_ohne_objekte,korrektur,loeschen}_partNN.txt`.
 Fundstelle aller Vorschläge: S248 Europeana (Q234110) + S813.
 
 **Ergebnis 27.11.2026** (Europeana-Stand 21.11.2026: 5.587 Organisationen, 1.042 mit sameAs;
@@ -784,6 +795,164 @@ Fundstelle aller Vorschläge: S248 Europeana (Q234110) + S813.
   Museum, Lund University“ → Universität Lund). Sie sind deshalb auskommentiert.
 - Gebiete statt Verwaltungen (Venetien, Nordholland, Gemeinde Ommen …) fielen erst über die
   Einwohnerzahl auf, denn Gemeinden liegen in Wikidata oft auch unter Organisation.
+
+## mul- und englische Labels: Museen, Bibliotheken, Archive in Europa
+
+```bash
+python -m glamsync labels --source wikidata                    # alle souveränen Staaten Europas
+python -m glamsync labels --source wikidata --country Q183,Q40 # einzelne Staaten
+python -m glamsync labels --source wikidata --types museum     # nur Museen
+```
+
+Viele Einrichtungen haben nur ein Label in der Landessprache und erscheinen in der englischen
+Ansicht (und in allen anderen Sprachen ohne Label) nur als QID. Gesucht werden je Staat und Typ
+alle Items mit P31/P279* Museum/Bibliothek/Archiv und P17 = Staat, die **weder ein mul- noch ein
+en-Label** haben. Ihre Labels und Aliase werden danach live über die API gelesen. Die
+QuickStatements ergänzen nur:
+
+| Art | Wert |
+|---|---|
+| `Lmul` | das **vorhandene** Label in einer Landessprache: Amtssprachen des Staates (P37 → P424, `no` → `nb`/`nn`), dazu Regionalsprachen (`REGIONAL` in `glamsync/labels.py`: z. B. ca/eu/gl in Spanien, de/fr/fur in Italien, hsb/dsb/fy/nds in Deutschland, se in Skandinavien) |
+| `Len` | der offizielle englische Name (P1448, Sprache en). Sonst der englische Name der verknüpften Europeana-Organisation, wenn Europeana auch einen Namen in der Landessprache führt oder der Name schon englischer Alias ist. Verknüpft heißt: P7704 in Wikidata, sonst die einzige sameAs-QID; ein Europeana-Name muss einem Label oder Alias gleichen. |
+
+Es entstehen keine eigenen Übersetzungen. Nur in den Bericht
+(`out/<datum>_bezeichnungen_<land>.csv`) kommen:
+- mehrere verschiedene Namen in Landessprachen (z. B. nl/fr in Belgien);
+- Labels nur in einer fremden Sprache (meist Übersetzungen, nicht der eigentliche Name);
+- Namen nur in nichtlateinischer Schrift: Als mul nützen sie lateinisch Lesenden wenig. Gibt es
+  eine lateinische Variante (z. B. `sr-el`), wird diese genommen;
+- englische Namen, die nur eine Schreibvariante sind (Ähnlichkeit ≥ 0,95) oder den Landesnamen
+  mit Zusatz enthalten (halbe Übersetzung), und englische Europeana-Namen ohne Namen in der
+  Landessprache (dort ist unklar, ob „en“ eine Übersetzung oder nur falsch ausgezeichnet ist);
+- Werte mit Anführungszeichen oder über 250 Zeichen.
+
+Vorhandene Labels mit offensichtlichen Fehlern werden nicht als mul kopiert, sondern mit
+„Label fehlerhaft … – erst korrigieren“ im Bericht genannt: unsichtbare Zeichen (LRM, Soft Hyphen
+…), HTML-Entities (`&#8232;`), doppelte Leerzeichen oder Leerzeichen am Rand, unpaarige oder eckige
+Klammern („Riksarkivet (Sverige) [no]“), Satzzeichen am Ende. Geschützte Leerzeichen (polnisch
+„w\u00a0Elblągu“) werden zu normalen. Die Kleinschreibung von fr/it/cs-Labels („musée Picasso“)
+bleibt erhalten (Entscheidung 27.11.2026).
+
+**Lauf 27.11.2026** (51 Staaten einschließlich Königreich Dänemark/Niederlande): 29.091 Items ohne
+mul- und en-Label → **26.504 `Lmul`**, davon DE 7.972, IT 3.858, SE 3.855, CZ 1.817, LV 1.536,
+AT 1.426, FR 1.230. **0 `Len`**: Items mit englischem P1448 haben schon ein en-Label, und die mit
+Europeana verknüpften Items wurden zuvor aus einem ersten (nur Europeana-)Lauf versorgt. Hinweise
+(2.601): 1.516 nur nichtlateinische Schrift (vor allem RU, UA, BG, GR, RS), 451 mehrere Namen in
+Landessprachen, 377 Anführungszeichen, 215 Label nur in fremder Sprache, 24 fehlerhafte Labels,
+15 unbestätigte Europeana-Verknüpfungen. Länge 2–170 Zeichen (Median 29). Stichproben unauffällig.
+Bei rund 4.700 Items mit mehreren Labels ist das zweite fast immer eine maschinelle Übersetzung
+(meist id: „Perpustakaan …“, auch hy); sie wird nicht übernommen.
+
+## Websites (P856): Museen, Bibliotheken, Archive in DE, AT, CH
+
+```bash
+python -m glamsync websites --country Q183   # DE (inkl. DDR); Q40 = AT, Q39 = CH
+python -m glamsync websites --country Q40 --limit 40   # Trockenlauf
+```
+
+Die Website hat sich beim Abgleich als gutes Kriterium bewährt (Register, Organisationen Stufe 2),
+fehlt aber an vielen Items. Das Kommando ergänzt P856 für Pool-Items (Museum/Bibliothek/Archiv,
+P31/P279*) **ohne gültige P856**. Die Adressen kommen nur aus Quellen, die über eine Kennung am Item
+hängen, es gibt keinen Namensabgleich:
+
+| Quelle | Kennung am Item | Fundstelle |
+|---|---|---|
+| ISIL-Register DE/AT (Berlin) | P791 | S248 Q28657655 |
+| ISIL-Verzeichnis CH | P791 | S854 Datensatz-Seite |
+| GND-Homepage (Tabelle aus dem Dump) | P227 | S248 Q36578 |
+| Museen in Österreich | P7917 | S854 Registereintrag |
+| Europeana-`homepage` | P7704 | S248 Q234110 |
+| DDB `website` (nur DE, über ISIL bzw. GND der DDB-Institution) | P791, P227 | S248 Q621630 |
+
+Jeweils + S813. Nennen mehrere Quellen dieselbe Adresse, bekommt jede eine eigene Zeile mit
+demselben Wert; QuickStatements hängt die weitere Fundstelle an dieselbe Aussage. Bei mehreren
+Adressen derselben Domain gewinnt die mit den meisten Quellen, bei Gleichstand nach der
+Übereinstimmung mit vorhandenen P856 in der Erkundung: Europeana (77 %), ISIL (72 %),
+Museen in Österreich (64 %), GND (56 %), DDB (52 %).
+
+**Linkprüfung** (`glamsync/sources/linkcheck.py`). Jede Adresse wird abgerufen, weil in der
+Erkundung rund jede fünfte Quell-Adresse tot war (Unterseiten 34 %, reine Domains 6 %):
+
+- GET mit Umleitungen und einer Stufe Meta-Refresh, höchstens 300 KB; neutraler User-Agent ohne
+  Kontaktangabe (die Anfragen gehen an die Websites der Einrichtungen, nicht an Wikimedia);
+- derselbe Host nacheinander mit 1 s Pause, 16 Hosts parallel;
+- erkannt werden Park- und Platzhalterseiten (Domain zu verkaufen, Hoster-Standardseite), Fehlerseiten
+  mit HTTP 200 („Seite nicht gefunden“) und Bot-Schutz („Just a moment…“);
+- Zertifikatsfehler: zweiter Versuch ohne Zertifikatsprüfung;
+- Cache `cache/linkcheck/`: 7 Tage, unklare Ergebnisse (Zeitüberschreitung, 403, 5xx) 24 Stunden;
+  `--no-cache` prüft alles neu.
+
+**Status je Item:**
+
+| Status | Regel | Ausgabe |
+|---|---|---|
+| `neu` | erreichbar, keine Park-/Fehlerseite, an keinem anderen Item (P856, ganz Wikidata, alle Schreibweisen), Quell-Adresse nur dieses Items, Quellen widersprechen sich nicht, **Namensnachweis** | `<datum>_P856_<land>_neu_partNN.txt` |
+| `pruefen` | erreichbar ohne Namensnachweis; oder **Umzug** auf eine andere Domain mit Namensnachweis (Vorschlag = neue Adresse) | `<datum>_P856_<land>_pruefen_partNN.txt`, **auskommentiert** |
+| `umgeleitet` | andere Domain, kein Namensnachweis | Bericht |
+| `tot` | 404/410, Domain unbekannt, Park- oder Fehlerseite | Bericht |
+| `unklar` | 401/403/429/5xx, Zeitüberschreitung, Bot-Schutz, SSL | Bericht (beim nächsten Lauf erneut) |
+| `geteilt` | Adresse ist P856 eines anderen Items (Dach, Gemeinde, Nachbar) oder Kandidat für mehrere Items | Bericht |
+| `widerspruch` | erreichbare Adressen auf verschiedenen Domains | Bericht |
+| `aufgeloest` | P576 am Item oder alle GND-Sätze des Items aufgelöst | Bericht |
+| `veraltet_in_wikidata` | die Adresse steht am Item schon mit Rang „veraltet“ | Bericht |
+| `ungueltig` | Leerzeichen, kaputte Umlaute (`RÃ¶misches`), Datei (PDF), E-Mail, soziale Netzwerke, Wikipedia | Bericht |
+
+- **Namensnachweis:** Ein kennzeichnendes Wort aus Labels (alle Sprachen) oder Quellnamen steht im
+  Seitentitel oder (ab 5 Zeichen) in der Adresse; Umlaute werden gefaltet (ö = oe). Allgemeine Wörter
+  wie Museum, Stadtarchiv, Bibliothek, Schloss zählen nicht. Bei Namen nur aus kurzen oder allgemeinen
+  Wörtern („Schloss Hof“) zählt der ganze Name als Wortfolge.
+- **Gemeinde-Startseite:** Passt nur der Ortsname und ist die Adresse die Startseite einer Domain, die
+  selbst nur der Ortsname ist (`weinsberg.de`, `stadt-spremberg.de`, nicht `museum.krumbach.de`),
+  geht der Vorschlag nach `pruefen`. Unterseiten von Gemeinde-Websites
+  (`…/kultur/stadtarchiv/`) sind dagegen normale Vorschläge.
+- **Wert:** die Adresse nach den Umleitungen ohne Tracking-/Session-Parameter und Fragment. War die
+  Quelle nur eine Domain, bleibt es die Startseite (auch wenn der Server auf `/start` oder `/de/`
+  umleitet), mit Schema und Host des Ziels (meist `https://`).
+- **P407 Sprache** aus `<html lang>`, nur in Landessprachen (DE/AT: de; CH: de, fr, it, rm); andere
+  Angaben sind oft eine falsche Vorlage (`lang="en-US"`) und werden weggelassen.
+
+Hinweiszeile und Befehl in `…_pruefen_…`:
+
+```
+# Q1792410 „Kunsthalle Krems“ ← GND 5072072-7 – Titel „Home | Kunstmeile Krems“ – umgezogen: http://www.kunstmeile-krems.at → https://www.kunstmeile.at/
+#Q1792410	P856	"https://www.kunstmeile.at/"	P407	Q188	S248	Q36578	S813	+2026-11-28T00:00:00Z/11
+```
+
+Geprüfte Befehle entkommentieren, die übrigen `#`-Zeilen entfernen (`grep -v '^#'`), dann einspielen.
+
+**Ausgabe:** `out/<datum>_P856_webseiten_<land>.csv` (eine Zeile je Item mit Quell-Adresse: Status, Wert,
+Sprache, Fundstellen, Nachweis, Seitentitel, Hinweis und Zustand jeder Quell-Adresse),
+`out/<datum>_P856_webseiten_<land>.md` (Zusammenfassung), die QS-Dateien oben (je 500 Zeilen).
+
+**Ergebnis 28.11.2026** (Pool mit Unterklassen; Linkprüfung am selben Tag):
+
+| | DE (Q183) | AT (Q40) | CH (Q39) |
+|---|---:|---:|---:|
+| Pool / mit P856 | 17.150 / 63 % | 3.263 / 53 % | 2.503 / 76 % |
+| ohne P856, mit Quell-Adresse | 1.406 | 291 | 63 |
+| geprüfte Adressen | 1.680 | 314 | 67 |
+| **neu** | **626** | **183** | **36** |
+| pruefen (#) | 110 | 17 | 5 |
+| umgeleitet | 10 | 0 | 0 |
+| tot | 276 | 26 | 5 |
+| unklar | 64 | 7 | 3 |
+| geteilt | 262 | 56 | 14 |
+| widerspruch / aufgeloest | 5 / 24 | 1 / 1 | 0 / 0 |
+| veraltet_in_wikidata / ungueltig | 26 / 3 | 0 / 0 | 0 / 0 |
+| mit P407 (Vorschläge) | 684 von 736 | 184 von 200 | 36 von 41 |
+
+- **Quellen der Vorschläge (DE, neu):** ISIL 432, DDB 94, GND 89, Europeana 11. 108 Vorschläge (neu und pruefen)
+  stützen sich auf mehrere Quellen. In AT kommen fast alle aus Museen in Österreich, in CH aus dem
+  ISIL-Verzeichnis.
+- **Tote Adressen (DE, 411):** 360 × HTTP 404, 36 × Domain unbekannt, 7 Parkseiten, 6 Fehlerseiten
+  mit HTTP 200, 2 × HTTP 410.
+- **pruefen (DE):** 73 Umzüge (z. B. MAN-Museum → everllence.com, Sielhafenmuseum dshm.de →
+  deutsches-sielhafenmuseum.de), 35 ohne Namensnachweis, 2 Gemeinde-Startseiten.
+- **geteilt (DE):** 239 Adressen sind schon P856 eines anderen Items (meist Gemeinde, Dachorganisation
+  oder Träger), 23 Adressen nennen die Quellen für mehrere Items. In Wien zeigen die Deep Links aller
+  Bezirksmuseen auf dieselbe Veranstaltungsseite.
+- Stichproben (20 neu DE, 12 neu AT, 12 neu CH) waren plausibel; Unterseiten von Gemeinde-Websites
+  überwiegen bei Archiven.
 
 ## Erkundung der Quellen
 
@@ -1103,11 +1272,13 @@ glamsync/
                             # agents.py (Europeana-Personen), gnd.py (lobid-Prüfung, GND-Dump),
                             # gnd_redirects.py (GND-Umlenkungen/-Löschungen),
                             # registry.py (ISIL-Verzeichnis, Museen in Österreich)
+                            # linkcheck.py (Erreichbarkeit/Umleitungen der Websites)
   normalize.py              # ID-Formate
   match.py                  # Zuordnung und Klassifikation (ohne Netz, getestet)
   registry.py               # Registerabgleich über Name + Website (ohne Netz, getestet)
   persons.py                # Personenabgleich Europeana-Agents (ohne Netz, getestet)
   orgs.py                   # Organisationen europaweit: sameAs, Website-/Kennungs-Kandidaten (ohne Netz, getestet)
+  websites.py               # P856 aus Quellen mit Kennung am Item, Namensnachweis (ohne Netz, getestet)
   gnd.py                    # GND-Körperschaften: Name + Ort, Zeitraum, Umlenkungen, Mix'n'match,
                             # Bezeichnungen (ohne Netz, getestet)
   pipeline.py               # Ablauf fetch / compare / export-qs
@@ -1133,15 +1304,15 @@ Aussagen werden live über die Wikidata-API gelesen. Ergänzt wird nur, was fehl
 
 | Property | Regel | Ausgabe |
 |---|---|---|
-| P214 VIAF / P213 ISNI | Wert aus dem GND-Satz; steht er schon an einem anderen Item → nur Bericht | `qs_P214_gnd_<land>_neu_…`, `qs_P213_…` |
-| P571 Gründung | nur genaues Jahr (Genauigkeit Jahr) | `qs_P571_…` |
-| P131 Ort | genau ein GND-Ort mit QID; nennt der Name einen Ortsteil dieses Ortes, aber nicht den Ort selbst → nur Bericht | `qs_P131_…` |
-| P31 Art | erster GND-Oberbegriff mit freigegebener Klasse ersetzt Museum/Bibliothek/Archiv; die allgemeine Aussage wird nur ohne Fundstellen/Qualifikatoren entfernt; gemischte P31 (z. B. Gebäude + Museum) bleiben | `qs_P31_gnd_<land>_ersetzen_…` |
+| P214 VIAF / P213 ISNI | Wert aus dem GND-Satz; steht er schon an einem anderen Item → nur Bericht | `<datum>_P214_gnd_<land>_neu_…`, `<datum>_P213_…` |
+| P571 Gründung | nur genaues Jahr (Genauigkeit Jahr) | `<datum>_P571_…` |
+| P131 Ort | genau ein GND-Ort mit QID; nennt der Name einen Ortsteil dieses Ortes, aber nicht den Ort selbst → nur Bericht | `<datum>_P131_…` |
+| P31 Art | erster GND-Oberbegriff mit freigegebener Klasse ersetzt Museum/Bibliothek/Archiv; die allgemeine Aussage wird nur ohne Fundstellen/Qualifikatoren entfernt; gemischte P31 (z. B. Gebäude + Museum) bleiben | `<datum>_P31_gnd_<land>_ersetzen_…` |
 
 Zuordnung Oberbegriff → Klasse: `data/gnd_oberbegriff_p31.csv` (Spalte `freigegeben` = `ja`).
 Neue Oberbegriffe werden bei jedem Lauf ergänzt (Suche über das deutsche Label, auch klein
 geschrieben; nur Unterklassen von Museum/Bibliothek/Archiv). Bericht aller Vorschläge:
-`out/anreicherung_gnd_<land>_<datum>.csv`.
+`out/<datum>_anreicherung_gnd_<land>.csv`.
 
 ### ISIL Schweiz und Österreich
 
@@ -1155,4 +1326,4 @@ geschrieben; nur Unterklassen von Museum/Bibliothek/Archiv). Bericht aller Vorsc
 - **`kandidat_sicher`** (zusätzlich zu `kandidat_stark`): genau ein Item am Registerort (P131/P276/P159,
   Ortsnamen de/fr/it/rm/en) ohne ISIL, dessen Label einem Registernamen sehr ähnlich ist (≥ 0,95,
   kompakt, Ortsname darf fehlen). Bei Berliner Datensätzen zählt nur der volle Name, nicht die
-  Kurzform (die lässt Zusätze wie „…, Bibliothek“ weg). → `qs_P791_isil_<land>_neu_…`
+  Kurzform (die lässt Zusätze wie „…, Bibliothek“ weg). → `<datum>_P791_isil_<land>_neu_…`

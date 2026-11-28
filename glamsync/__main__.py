@@ -1,4 +1,4 @@
-"""Kommandozeile: python -m glamsync {fetch,compare,export-qs,registry,export-mnm,cities,persons,organisations} …"""
+"""Kommandozeile: python -m glamsync {fetch,compare,export-qs,registry,export-mnm,labels,enrich,websites,cities,persons,organisations} …"""
 
 from __future__ import annotations
 
@@ -61,14 +61,25 @@ def main(argv: list[str] | None = None) -> None:
     mn.add_argument("--include-historical", action="store_true",
                     help="auch aufgelöste Einrichtungen und frühere Namensformen (mit Zeitraum in der Beschreibung)")
 
-    lb = sub.add_parser("labels", help="Deutsche Labels, Beschreibungen und Aliase aus der GND (QuickStatements)")
-    lb.add_argument("--source", required=True, choices=["gnd"])
-    lb.add_argument("--country", default="Q183", help="Q183 (DE inkl. DDR), Q40 (AT), Q39 (CH)")
-    lb.add_argument("--rebuild", action="store_true", help="GND-Tabelle aus dem Dump neu erzeugen")
+    lb = sub.add_parser("labels", help="Labels als QuickStatements: deutsche aus der GND, mul/en für Museen/Bibliotheken/Archive in Europa")
+    lb.add_argument("--source", required=True, choices=["gnd", "wikidata"],
+                    help="gnd = deutsche Labels, Beschreibungen, Aliase; wikidata = mul-Label (Name der "
+                         "Landessprache) und en-Label für Items ohne mul und en")
+    lb.add_argument("--country", help="gnd: Q183 (DE inkl. DDR, Standard), Q40 (AT), Q39 (CH); "
+                                      "wikidata: europa (Standard), ein Land (Q183) oder Liste (Q183,Q40)")
+    lb.add_argument("--types", default="museum,library,archive", help="nur wikidata")
+    lb.add_argument("--rebuild", action="store_true", help="gnd: GND-Tabelle aus dem Dump neu erzeugen")
 
     en = sub.add_parser("enrich", help="Ergänzungen aus der GND für Items mit P227: P214, P213, P571, P131, P31")
     en.add_argument("--source", required=True, choices=["gnd"])
     en.add_argument("--country", default="Q183", help="Q183 (DE inkl. DDR), Q40 (AT), Q39 (CH)")
+
+    ws = sub.add_parser("websites", help="P856 (Website) aus ISIL-Register, GND, Museen in Österreich, Europeana "
+                                         "und DDB für Items ohne Website – mit Linkprüfung")
+    ws.add_argument("--country", default="Q183", choices=list(pipeline.WEBSITE_COUNTRIES),
+                    help="Q183 (DE inkl. DDR), Q40 (AT), Q39 (CH)")
+    ws.add_argument("--types", default="museum,library,archive")
+    ws.add_argument("--limit", type=int, help="Trockenlauf: höchstens N Items mit Quell-Adresse")
 
     st = sub.add_parser("cities", help="Städte: Europeana-Orte ↔ Wikidata (P7704 place/…), über sameAs")
     st.add_argument("--country", default="europa",
@@ -110,12 +121,12 @@ def main(argv: list[str] | None = None) -> None:
     elif args.cmd == "compare":
         s = pipeline.compare(client, args.country, pipeline.parse_types(args.types), args.limit,
                              args.subclasses, tuple(x.strip() for x in args.sources.split(",")))
-        print(f"Fertig. Siehe out/summary_{s['date']}.md und out/report_{s['date']}.csv")
+        print(f"Fertig. Siehe out/{s['date']}_summary.md und out/{s['date']}_report.csv")
     elif args.cmd == "registry" and args.source == "gnd":
         types = pipeline.parse_types(args.types) if args.types else None
         s = pipeline.gnd_compare(client, args.country, types, args.subclasses, args.limit, args.rebuild,
                                  args.include_historical, args.propose_dates)
-        print(f"Fertig. Siehe out/register_gnd_{s['country']}_{s['date']}.md")
+        print(f"Fertig. Siehe out/{s['date']}_P227_register_gnd_{s['country']}.md")
         for name in [*s["mnm"], *s["qs"]]:
             print("out/" + name)
     elif args.cmd == "export-mnm":
@@ -130,8 +141,16 @@ def main(argv: list[str] | None = None) -> None:
         for name in s["files"]:
             print("out/" + name)
     elif args.cmd == "labels":
-        s = pipeline.gnd_labels(client, args.country, args.rebuild)
-        print(f"{s['items']} Items mit GND aus der Tabelle; Hinweise: {s['notes']} (out/{s['report']})")
+        if args.source == "wikidata":
+            s = pipeline.wikidata_labels(client, args.country or "europa", pipeline.parse_types(args.types))
+            print(f"{s['items']} Items ohne mul- und en-Label in {s['countries']} Staaten; "
+                  f"Hinweise: {s['notes']} (out/{s['report']})")
+            if s["failed"]:
+                print("Nicht abrufbar: " + "; ".join(s["failed"]))
+            print("Quellen en: " + (", ".join(f"{k} {v}" for k, v in s["en_sources"].items()) or "keine"))
+        else:
+            s = pipeline.gnd_labels(client, args.country or "Q183", args.rebuild)
+            print(f"{s['items']} Items mit GND aus der Tabelle; Hinweise: {s['notes']} (out/{s['report']})")
         for kind, c in s["counts"].items():
             print(f"  {kind}: {c['items']} Items, {c['lines']} Befehle")
         for name in s["files"]:
@@ -139,21 +158,28 @@ def main(argv: list[str] | None = None) -> None:
     elif args.cmd == "registry":
         types = pipeline.parse_types(args.types) if args.types else None
         s = pipeline.registry_compare(client, args.source, args.country, types, args.subclasses)
-        print(f"Fertig. Siehe out/register_{s['source']}_{s['country']}_{s['date']}.md")
+        print(f"Fertig. Siehe out/{s['date']}_{s['prop']}_register_{s['source']}_{s['country']}.md")
+    elif args.cmd == "websites":
+        s = pipeline.websites_compare(client, args.country, pipeline.parse_types(args.types), args.limit)
+        print(f"{s['items']} Items ohne P856 mit Quell-Adresse ({s['urls']} Adressen geprüft): "
+              + ", ".join(f"{k} {v}" for k, v in s["status"].items()))
+        print(f"Fertig. Siehe out/{s['date']}_P856_webseiten_{s['country']}.md")
+        for name in s["files"]:
+            print("out/" + name)
     elif args.cmd == "cities":
         s = pipeline.cities_compare(client, args.country, args.city_class, args.subclasses,
                                     args.min_population)
-        print(f"Fertig. Siehe out/staedte_{s['country']}_{s['date']}.md")
+        print(f"Fertig. Siehe out/{s['date']}_P7704_staedte_{s['country']}.md")
         for name in s["files"]:
             print("out/" + name)
     elif args.cmd == "persons":
         s = pipeline.persons_compare(client, gnd_search=args.gnd)
-        print(f"Fertig. Siehe out/personen_{s['date']}.md")
+        print(f"Fertig. Siehe out/{s['date']}_personen.md")
         for name in s["files"]:
             print("out/" + name)
     elif args.cmd == "organisations":
         s = pipeline.organisations_compare(client, candidates=not args.no_candidates)
-        print(f"Fertig. Siehe out/organisationen_{s['date']}.md")
+        print(f"Fertig. Siehe out/{s['date']}_P7704_organisationen.md")
         for name in s["files"]:
             print("out/" + name)
     elif args.cmd == "export-qs":

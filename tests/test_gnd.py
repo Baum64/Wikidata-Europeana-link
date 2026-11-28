@@ -324,11 +324,11 @@ def test_mnm_rows_and_description(tmp_path):
     assert len(mnm_description(body("1", "x", broader=["y" * 400]))) == 255
 
     paths = write_mnm(rows, "2026-11-21", out_dir=tmp_path, lands=["DE", "DDR"])
-    assert sorted(p.name for p, _ in paths) == ["mnm_gnd_archive_DE_2026-11-21.csv", "mnm_gnd_library_DDR_2026-11-21.csv",
-                                               "mnm_gnd_museum_DDR_2026-11-21.csv"]
-    text = (tmp_path / "mnm_gnd_archive_DE_2026-11-21.csv").read_text(encoding="utf-8")
+    assert sorted(p.name for p, _ in paths) == ["2026-11-21_P227_mnm_gnd_archive_DE.csv", "2026-11-21_P227_mnm_gnd_library_DDR.csv",
+                                               "2026-11-21_P227_mnm_gnd_museum_DDR.csv"]
+    text = (tmp_path / "2026-11-21_P227_mnm_gnd_archive_DE.csv").read_text(encoding="utf-8")
     assert text.splitlines()[0] == "id,name,description,url,type"
-    with (tmp_path / "mnm_gnd_museum_DDR_2026-11-21.csv").open(encoding="utf-8") as fh:
+    with (tmp_path / "2026-11-21_P227_mnm_gnd_museum_DDR.csv").open(encoding="utf-8") as fh:
         rows_back = list(csv.DictReader(fh))
     assert rows_back[0]["name"] == 'Museum "Alte Post"' and list(rows_back[0]) == ["id", "name", "description", "url", "type"]
 

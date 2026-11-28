@@ -66,6 +66,14 @@ def fetch_isils(client: CachedClient, ddb_id: str) -> list[str]:
     return sorted({v for v in (normalize_isil(r) for r in raw if r) if v})
 
 
+def fetch_website(client: CachedClient, ddb_id: str) -> str:
+    """Website der Institution aus /items/{id} (view.cortex-institution.website, sonst provider-uri).
+    Dieselbe Anfrage wie fetch_isils, kommt also nach einem compare-Lauf aus dem Cache."""
+    item = client.get_json(f"{B}/items/{ddb_id}", allow_404=True) or {}
+    web = (((item.get("view") or {}).get("cortex-institution") or {}).get("website") or "").strip()
+    return web or ((item.get("provider-info") or {}).get("provider-uri") or "").strip()
+
+
 def fetch(
     client: CachedClient, sectors: set[str] | None = None, limit: int | None = None
 ) -> list[SourceRecord]:

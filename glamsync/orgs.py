@@ -59,6 +59,7 @@ class Org:
     record_count: int = 0
     qids: list[str] = field(default_factory=list)
     ids: dict[str, list[str]] = field(default_factory=dict)
+    pref: dict[str, str] = field(default_factory=dict)  # prefLabel je Sprache
 
     @property
     def value(self) -> str:
@@ -90,6 +91,7 @@ def org_from_raw(o: dict) -> Org:
         record_count=int((o.get("isAggregatedBy") or {}).get("recordCount") or 0),
         qids=sorted({q for q in (qid_from_uri(s) for s in same if "wikidata.org" in s) if q}),
         ids={p: sorted({v for v in (norm[p](s) for s in same if pat[p] in s) if v}) for p in ID_PROPS},
+        pref={k: v for k, v in pl.items() if isinstance(v, str) and v},
     )
 
 
@@ -346,3 +348,4 @@ def _flat(s: str) -> str:
 
 def _join(a: str, b: str) -> str:
     return "; ".join(x for x in (a, b) if x)
+

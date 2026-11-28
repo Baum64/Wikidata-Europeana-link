@@ -190,3 +190,4 @@ def test_patient_query_retries_after_throttling(monkeypatch):
     Client.calls = 0
     with pytest.raises(SkippedRequest):
         W.Wikidata(Client()).query("q")  # ohne patient: wie bisher abbrechen
+

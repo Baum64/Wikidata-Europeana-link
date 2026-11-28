@@ -67,5 +67,5 @@ def test_duplicates_existing_value_wins():
 def test_city_qs_filename(tmp_path):
     f = classify_city("Q2079", city(), [place_record("1444", place(1444))], NO)
     [p] = write_qs([f], "P7704", "new", "2026-11-16", tmp_path, tag="staedte_Q183")
-    assert p.name == "qs_P7704_staedte_Q183_neu_2026-11-16_part01.txt"
+    assert p.name == "2026-11-16_P7704_staedte_Q183_neu_part01.txt"
     assert p.read_text() == 'Q2079|P7704|"place/1444"|S248|Q234110|S813|+2026-11-16T00:00:00Z/11\n'
